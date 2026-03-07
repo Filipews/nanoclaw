@@ -197,7 +197,9 @@ function findAllowedRoot(
 }
 
 /**
- * Validate the container path to prevent escaping /workspace/extra/
+ * Validate the container path to prevent escaping safe namespaces.
+ * Relative paths are mounted under /workspace/extra/.
+ * Absolute paths are allowed only under /workspace/ or /mnt/.
  */
 function isValidContainerPath(containerPath: string): boolean {
   // Must not contain .. to prevent path traversal
@@ -205,14 +207,17 @@ function isValidContainerPath(containerPath: string): boolean {
     return false;
   }
 
-  // Must not be absolute (it will be prefixed with /workspace/extra/)
-  if (containerPath.startsWith('/')) {
-    return false;
-  }
-
   // Must not be empty
   if (!containerPath || containerPath.trim() === '') {
     return false;
+  }
+
+  // Absolute paths are only allowed under safe container namespaces
+  if (containerPath.startsWith('/')) {
+    return (
+      containerPath.startsWith('/workspace/') ||
+      containerPath.startsWith('/mnt/')
+    );
   }
 
   return true;
@@ -352,9 +357,16 @@ export function validateAdditionalMounts(
     const result = validateMount(mount, isMain);
 
     if (result.allowed) {
+      // Use absolute container paths directly; relative paths go under /workspace/extra/
+      const resolvedContainerPath = result.resolvedContainerPath!;
+      const containerPath =
+        resolvedContainerPath.startsWith('/workspace/') ||
+        resolvedContainerPath.startsWith('/mnt/')
+          ? resolvedContainerPath
+          : `/workspace/extra/${resolvedContainerPath}`;
       validatedMounts.push({
         hostPath: result.realHostPath!,
-        containerPath: `/workspace/extra/${result.resolvedContainerPath}`,
+        containerPath,
         readonly: result.effectiveReadonly!,
       });
 

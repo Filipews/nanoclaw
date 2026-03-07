@@ -255,6 +255,52 @@ function buildContainerArgs(
   return args;
 }
 
+/**
+ * Build a context prefix to prepend to the agent prompt.
+ * Reads groups/personal/CLAUDE.md, vault MEMORY.md, and today/yesterday's ledger
+ * from the host before the container spawns.
+ */
+function buildContextPrefix(group: RegisteredGroup): string {
+  const parts: string[] = [];
+
+  // Always inject groups/personal/CLAUDE.md if it exists
+  const personalClaudeMd = path.join(GROUPS_DIR, 'personal', 'CLAUDE.md');
+  if (fs.existsSync(personalClaudeMd)) {
+    const content = fs.readFileSync(personalClaudeMd, 'utf-8');
+    parts.push(`## groups/personal/CLAUDE.md\n\n${content.trim()}`);
+  }
+
+  // Find the /workspace/obsidian mount to resolve host paths for vault files
+  const obsidianMount = group.containerConfig?.additionalMounts?.find(
+    (m) => m.containerPath === '/workspace/obsidian',
+  );
+
+  if (obsidianMount) {
+    const base = obsidianMount.hostPath;
+
+    const memoryPath = path.join(base, 'MEMORY.md');
+    if (fs.existsSync(memoryPath)) {
+      const content = fs.readFileSync(memoryPath, 'utf-8');
+      parts.push(`## MEMORY.md\n\n${content.trim()}`);
+    }
+
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const yesterday = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+
+    for (const date of [today, yesterday]) {
+      const ledgerPath = path.join(base, 'Ledger', `${date}.md`);
+      if (fs.existsSync(ledgerPath)) {
+        const content = fs.readFileSync(ledgerPath, 'utf-8');
+        parts.push(`## Ledger/${date}.md\n\n${content.trim()}`);
+      }
+    }
+  }
+
+  if (parts.length === 0) return '';
+  return `<injected_context>\n${parts.join('\n\n')}\n</injected_context>\n\n`;
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -308,6 +354,12 @@ export async function runContainerAgent(
     let stderr = '';
     let stdoutTruncated = false;
     let stderrTruncated = false;
+
+    // Prepend injected context (vault memory, ledger) to the prompt
+    const contextPrefix = buildContextPrefix(group);
+    if (contextPrefix) {
+      input.prompt = contextPrefix + input.prompt;
+    }
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets();
