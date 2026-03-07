@@ -10,6 +10,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
+import { chromium, Browser, BrowserContext, Page } from 'playwright';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -348,6 +349,266 @@ Use available_groups.json to find the JID for a group. The folder name must be c
     return {
       content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
     };
+  },
+);
+
+// === Playwright Browser Tools ===
+
+let _browser: Browser | null = null;
+let _context: BrowserContext | null = null;
+let _page: Page | null = null;
+
+function randomDelay(minMs = 1000, maxMs = 3000): Promise<void> {
+  const ms = Math.floor(Math.random() * (maxMs - minMs) + minMs);
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function getBrowserPage(): Promise<Page> {
+  if (_browser === null || !_browser.isConnected()) {
+    _browser = await chromium.launch({
+      headless: false,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-infobars',
+        '--window-size=1920,1080',
+      ],
+    });
+    _context = await _browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      locale: 'pt-BR',
+      userAgent:
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    await _context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+    _page = await _context.newPage();
+  }
+  if (_page === null || _page.isClosed()) {
+    _page = await _context!.newPage();
+  }
+  return _page;
+}
+
+process.on('exit', () => {
+  _browser?.close().catch(() => {});
+});
+
+server.tool(
+  'browser_navigate',
+  'Navigate to a URL and wait for the page to load. Adds a random human-like delay (1–3 s) after load to reduce bot-detection risk. Returns the page title and final URL.',
+  {
+    url: z.string().describe('URL to navigate to'),
+    wait_until: z
+      .enum(['load', 'domcontentloaded', 'networkidle'])
+      .default('networkidle')
+      .describe('When to consider navigation complete (default: networkidle)'),
+  },
+  async (args) => {
+    try {
+      const page = await getBrowserPage();
+      await page.goto(args.url, {
+        waitUntil: args.wait_until as 'load' | 'domcontentloaded' | 'networkidle',
+        timeout: 30000,
+      });
+      await randomDelay();
+      const title = await page.title();
+      const url = page.url();
+      return {
+        content: [{ type: 'text' as const, text: `Navigated to: ${url}\nTitle: ${title}` }],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Navigation error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'browser_query',
+  'Extract text or attribute values from elements matching a CSS selector. Returns up to 20 matches.',
+  {
+    selector: z.string().describe('CSS selector'),
+    attribute: z
+      .string()
+      .optional()
+      .describe('Attribute to extract (e.g. "href", "src"). Omit to get innerText.'),
+    limit: z.number().int().min(1).max(50).default(20).describe('Max results to return'),
+  },
+  async (args) => {
+    try {
+      const page = await getBrowserPage();
+      const results = await page.evaluate(
+        ({ selector, attribute, limit }) => {
+          const els = Array.from(document.querySelectorAll(selector)).slice(0, limit);
+          return els.map((el) =>
+            attribute
+              ? (el as HTMLElement).getAttribute(attribute) || ''
+              : (el as HTMLElement).innerText?.trim() || '',
+          );
+        },
+        { selector: args.selector, attribute: args.attribute ?? null, limit: args.limit },
+      );
+      if (results.length === 0) {
+        return { content: [{ type: 'text' as const, text: `No elements matched "${args.selector}"` }] };
+      }
+      const text = results.map((r, i) => `[${i + 1}] ${r}`).join('\n');
+      return { content: [{ type: 'text' as const, text }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Query error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'browser_click',
+  'Click an element matching a CSS selector. Waits up to 5 s for the element to be visible.',
+  {
+    selector: z.string().describe('CSS selector of the element to click'),
+    timeout: z.number().int().default(5000).describe('Wait timeout in ms'),
+  },
+  async (args) => {
+    try {
+      const page = await getBrowserPage();
+      await page.click(args.selector, { timeout: args.timeout });
+      await randomDelay(500, 1500);
+      return { content: [{ type: 'text' as const, text: `Clicked: ${args.selector}` }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Click error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'browser_screenshot',
+  'Take a screenshot of the current page and save it to /workspace/data/price-research/screenshots/YYYY-MM-DD-{slug}.png. Returns the saved file path.',
+  {
+    slug: z
+      .string()
+      .describe('Short identifier for the file, e.g. "mercadolivre-iphone15". Alphanumeric and hyphens only.'),
+    full_page: z.boolean().default(false).describe('Capture full scrollable page (default: viewport only)'),
+  },
+  async (args) => {
+    try {
+      const page = await getBrowserPage();
+      const date = new Date().toISOString().slice(0, 10);
+      const slug = args.slug.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase();
+      const dir = '/workspace/data/price-research/screenshots';
+      fs.mkdirSync(dir, { recursive: true });
+      const filepath = path.join(dir, `${date}-${slug}.png`);
+      await page.screenshot({ path: filepath, fullPage: args.full_page });
+      return { content: [{ type: 'text' as const, text: `Screenshot saved: ${filepath}` }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Screenshot error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'browser_scroll',
+  'Scroll the current page.',
+  {
+    direction: z
+      .enum(['up', 'down', 'top', 'bottom'])
+      .describe('up/down scroll by pixels; top/bottom jump to page edge'),
+    amount: z
+      .number()
+      .int()
+      .optional()
+      .describe('Pixels to scroll for up/down (default: 600)'),
+  },
+  async (args) => {
+    try {
+      const page = await getBrowserPage();
+      const px = args.amount ?? 600;
+      switch (args.direction) {
+        case 'down':
+          await page.evaluate((n) => window.scrollBy(0, n), px);
+          break;
+        case 'up':
+          await page.evaluate((n) => window.scrollBy(0, -n), px);
+          break;
+        case 'top':
+          await page.evaluate(() => window.scrollTo(0, 0));
+          break;
+        case 'bottom':
+          await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+          break;
+      }
+      await randomDelay(300, 800);
+      return { content: [{ type: 'text' as const, text: `Scrolled ${args.direction}` }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Scroll error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'browser_close',
+  'Close the browser and release all resources. Call this when browsing is done.',
+  {},
+  async () => {
+    try {
+      if (_browser) {
+        await _browser.close();
+        _browser = null;
+        _context = null;
+        _page = null;
+      }
+      return { content: [{ type: 'text' as const, text: 'Browser closed.' }] };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Close error: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
   },
 );
 

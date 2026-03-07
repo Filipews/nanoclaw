@@ -286,7 +286,9 @@ function buildContextPrefix(group: RegisteredGroup): string {
 
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
-    const yesterday = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+    const yesterday = new Date(now.getTime() - 86_400_000)
+      .toISOString()
+      .slice(0, 10);
 
     for (const date of [today, yesterday]) {
       const ledgerPath = path.join(base, 'Ledger', `${date}.md`);
