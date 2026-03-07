@@ -6,7 +6,7 @@ import { readEnvFile } from './env.js';
 // Read config values from .env (falls back to process.env).
 // Secrets are NOT read here — they stay on disk and are loaded only
 // where needed (container-runner.ts) to avoid leaking to child processes.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
+const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'AGENT_TIMEZONE']);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -64,6 +64,16 @@ export const TRIGGER_PATTERN = new RegExp(
 );
 
 // Timezone for scheduled tasks (cron expressions, etc.)
-// Uses system timezone by default
+// AGENT_TIMEZONE is the preferred variable (NanoClaw-specific).
+// Falls back to the standard TZ env var, then the system timezone.
 export const TIMEZONE =
-  process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  process.env.AGENT_TIMEZONE ||
+  envConfig.AGENT_TIMEZONE ||
+  process.env.TZ ||
+  Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Ensure process.env.TZ matches the configured timezone so that
+// naive timestamp strings (no Z suffix) passed to new Date() on the
+// host process — e.g. 'once' schedule values like "2026-03-10T08:00:00" —
+// are interpreted as local time rather than the system default.
+process.env.TZ = TIMEZONE;

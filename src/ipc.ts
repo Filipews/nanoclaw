@@ -160,6 +160,7 @@ export async function processTaskIpc(
     prompt?: string;
     schedule_type?: string;
     schedule_value?: string;
+    next_run?: string;
     context_mode?: string;
     groupFolder?: string;
     chatJid?: string;
@@ -380,6 +381,32 @@ export async function processTaskIpc(
             if (!isNaN(ms) && ms > 0) {
               updates.next_run = new Date(Date.now() + ms).toISOString();
             }
+          } else if (updatedTask.schedule_type === 'once') {
+            const date = new Date(updatedTask.schedule_value);
+            if (!isNaN(date.getTime())) {
+              updates.next_run = date.toISOString();
+            } else {
+              logger.warn(
+                { taskId: data.taskId, value: updatedTask.schedule_value },
+                'Invalid timestamp in once task update',
+              );
+              break;
+            }
+          }
+        }
+
+        // Direct next_run override — lets the agent postpone a single
+        // occurrence of a recurring task without changing the cron expression.
+        if (data.next_run !== undefined) {
+          const date = new Date(data.next_run);
+          if (!isNaN(date.getTime())) {
+            updates.next_run = date.toISOString();
+          } else {
+            logger.warn(
+              { taskId: data.taskId, value: data.next_run },
+              'Invalid next_run in task update',
+            );
+            break;
           }
         }
 

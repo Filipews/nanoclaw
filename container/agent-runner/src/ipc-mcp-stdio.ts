@@ -249,12 +249,15 @@ server.tool(
 
 server.tool(
   'update_task',
-  'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.',
+  `Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.
+
+To postpone a single occurrence of a recurring task without changing the recurring schedule, use next_run with a local timestamp (same format as 'once' schedule_value: no Z suffix). The cron expression is preserved and the task resumes its normal schedule after the postponed run.`,
   {
     task_id: z.string().describe('The task ID to update'),
     prompt: z.string().optional().describe('New prompt for the task'),
     schedule_type: z.enum(['cron', 'interval', 'once']).optional().describe('New schedule type'),
     schedule_value: z.string().optional().describe('New schedule value (see schedule_task for format)'),
+    next_run: z.string().optional().describe('Override the next run time only (local timestamp, no Z suffix, e.g. "2026-03-12T08:00:00"). Use this to postpone one occurrence of a recurring task without changing the cron expression.'),
   },
   async (args) => {
     // Validate schedule_value if provided
@@ -279,6 +282,20 @@ server.tool(
         };
       }
     }
+    if (args.next_run !== undefined) {
+      if (/[Zz]$/.test(args.next_run) || /[+-]\d{2}:\d{2}$/.test(args.next_run)) {
+        return {
+          content: [{ type: 'text' as const, text: `next_run must be local time without timezone suffix. Got "${args.next_run}" — use format like "2026-03-12T08:00:00".` }],
+          isError: true,
+        };
+      }
+      if (isNaN(new Date(args.next_run).getTime())) {
+        return {
+          content: [{ type: 'text' as const, text: `Invalid next_run timestamp: "${args.next_run}". Use local time format like "2026-03-12T08:00:00".` }],
+          isError: true,
+        };
+      }
+    }
 
     const data: Record<string, string | undefined> = {
       type: 'update_task',
@@ -290,6 +307,7 @@ server.tool(
     if (args.prompt !== undefined) data.prompt = args.prompt;
     if (args.schedule_type !== undefined) data.schedule_type = args.schedule_type;
     if (args.schedule_value !== undefined) data.schedule_value = args.schedule_value;
+    if (args.next_run !== undefined) data.next_run = args.next_run;
 
     writeIpcFile(TASKS_DIR, data);
 
