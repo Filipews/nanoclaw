@@ -1,6 +1,6 @@
-# Andy
+# Eve
 
-You are Andy, a personal assistant. You help with tasks, answer questions, and can schedule reminders.
+You are Eve, a personal assistant. You help with tasks, answer questions, and can schedule reminders.
 
 ## What You Can Do
 
@@ -126,7 +126,7 @@ Groups are registered in the SQLite `registered_groups` table:
   "1234567890-1234567890@g.us": {
     "name": "Family Chat",
     "folder": "whatsapp_family-chat",
-    "trigger": "@Andy",
+    "trigger": "@Eve",
     "added_at": "2024-01-31T12:00:00.000Z"
   }
 }
@@ -145,7 +145,7 @@ Fields:
 
 - **Main group** (`isMain: true`): No trigger needed — all messages are processed automatically
 - **Groups with `requiresTrigger: false`**: No trigger needed — all messages processed (use for 1-on-1 or solo chats)
-- **Other groups** (default): Messages must start with `@AssistantName` to be processed
+- **Other groups** (default): Messages must start with `@Eve` to be processed
 
 ### Adding a Group
 
@@ -171,7 +171,7 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
   "1234567890@g.us": {
     "name": "Dev Team",
     "folder": "dev-team",
-    "trigger": "@Andy",
+    "trigger": "@Eve",
     "added_at": "2026-01-31T12:00:00Z",
     "containerConfig": {
       "additionalMounts": [
