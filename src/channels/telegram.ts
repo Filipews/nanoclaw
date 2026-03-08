@@ -56,11 +56,18 @@ export class TelegramChannel implements Channel {
     // Debug command: sends a test message with inline buttons
     this.bot.command('testbuttons', async (ctx) => {
       const chatJid = `tg:${ctx.chat.id}`;
-      await this.sendMessageWithButtons(chatJid, '🧪 Test message with buttons', [
-        { label: '✓ Whitelist', value: 'email_action:whitelist:test@example.com' },
-        { label: '✗ Block', value: 'email_action:block:test@example.com' },
-        { label: '– Ignore', value: 'email_action:ignore:test@example.com' },
-      ]);
+      await this.sendMessageWithButtons(
+        chatJid,
+        '🧪 Test message with buttons',
+        [
+          {
+            label: '✓ Whitelist',
+            value: 'email_action:whitelist:test@example.com',
+          },
+          { label: '✗ Block', value: 'email_action:block:test@example.com' },
+          { label: '– Ignore', value: 'email_action:ignore:test@example.com' },
+        ],
+      );
     });
 
     // Handle inline button taps (callback queries)
@@ -78,7 +85,10 @@ export class TelegramChannel implements Channel {
         if (msg.reply_markup?.inline_keyboard) {
           for (const row of msg.reply_markup.inline_keyboard) {
             for (const btn of row) {
-              if ('callback_data' in btn && btn.callback_data === callbackData) {
+              if (
+                'callback_data' in btn &&
+                btn.callback_data === callbackData
+              ) {
                 buttonLabel = btn.text;
                 break;
               }
@@ -86,10 +96,9 @@ export class TelegramChannel implements Channel {
           }
         }
         try {
-          await ctx.editMessageText(
-            `${msg.text}\n\n✓ ${buttonLabel}`,
-            { reply_markup: new InlineKeyboard() },
-          );
+          await ctx.editMessageText(`${msg.text}\n\n✓ ${buttonLabel}`, {
+            reply_markup: new InlineKeyboard(),
+          });
         } catch (err) {
           logger.debug({ err }, 'Failed to edit callback query message');
         }
@@ -100,7 +109,10 @@ export class TelegramChannel implements Channel {
       const chatJid = `tg:${chatId}`;
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) {
-        logger.debug({ chatJid, callbackData }, 'Callback from unregistered chat, ignoring');
+        logger.debug(
+          { chatJid, callbackData },
+          'Callback from unregistered chat, ignoring',
+        );
         return;
       }
 
@@ -122,7 +134,10 @@ export class TelegramChannel implements Channel {
         is_from_me: false,
       });
 
-      logger.info({ chatJid, callbackData, sender: senderName }, 'Callback query routed as message');
+      logger.info(
+        { chatJid, callbackData, sender: senderName },
+        'Callback query routed as message',
+      );
     });
 
     this.bot.on('message:text', async (ctx) => {
@@ -325,9 +340,15 @@ export class TelegramChannel implements Channel {
         parse_mode: 'Markdown',
         reply_markup: keyboard,
       });
-      logger.info({ jid, buttonCount: buttons.length }, 'Telegram message with buttons sent');
+      logger.info(
+        { jid, buttonCount: buttons.length },
+        'Telegram message with buttons sent',
+      );
     } catch (err) {
-      logger.error({ jid, err }, 'Failed to send Telegram message with buttons');
+      logger.error(
+        { jid, err },
+        'Failed to send Telegram message with buttons',
+      );
     }
   }
 

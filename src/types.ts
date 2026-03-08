@@ -89,7 +89,11 @@ export interface Channel {
   connect(): Promise<void>;
   sendMessage(jid: string, text: string): Promise<void>;
   // Optional: send a message with inline keyboard buttons (Telegram only for now).
-  sendMessageWithButtons?(jid: string, text: string, buttons: ButtonAction[]): Promise<void>;
+  sendMessageWithButtons?(
+    jid: string,
+    text: string,
+    buttons: ButtonAction[],
+  ): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

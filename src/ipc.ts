@@ -12,7 +12,11 @@ import { ButtonAction, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
-  sendMessageWithButtons?: (jid: string, text: string, buttons: ButtonAction[]) => Promise<void>;
+  sendMessageWithButtons?: (
+    jid: string,
+    text: string,
+    buttons: ButtonAction[],
+  ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
