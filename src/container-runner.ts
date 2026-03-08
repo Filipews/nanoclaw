@@ -138,7 +138,10 @@ function buildVolumeMounts(
   };
   if (fs.existsSync(settingsFile)) {
     try {
-      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>;
+      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<
+        string,
+        unknown
+      >;
     } catch {
       // keep defaults if file is malformed
     }
@@ -205,10 +208,15 @@ function buildVolumeMounts(
       const dstFile = path.join(groupAgentRunnerDir, file);
       if (!fs.statSync(srcFile).isFile()) continue;
       const srcMtime = fs.statSync(srcFile).mtimeMs;
-      const dstMtime = fs.existsSync(dstFile) ? fs.statSync(dstFile).mtimeMs : 0;
+      const dstMtime = fs.existsSync(dstFile)
+        ? fs.statSync(dstFile).mtimeMs
+        : 0;
       if (srcMtime > dstMtime) {
         fs.copyFileSync(srcFile, dstFile);
-        logger.debug({ group: group.folder, file }, 'Synced agent-runner source file');
+        logger.debug(
+          { group: group.folder, file },
+          'Synced agent-runner source file',
+        );
       }
     }
   }
@@ -327,6 +335,89 @@ function buildContextPrefix(group: RegisteredGroup): string {
   return `<injected_context>\n${parts.join('\n\n')}\n</injected_context>\n\n`;
 }
 
+/**
+ * Append a structured log entry to the group's Obsidian Logs/ directory.
+ * Called by the host after every container run, regardless of outcome.
+ */
+function writeObsidianLog(
+  group: RegisteredGroup,
+  prompt: string,
+  results: string[],
+  status: 'success' | 'error',
+  durationMs: number,
+  isScheduledTask: boolean,
+): void {
+  const obsidianMount = group.containerConfig?.additionalMounts?.find(
+    (m) => m.containerPath === '/workspace/obsidian',
+  );
+  if (!obsidianMount) return;
+
+  try {
+    const logsDir = path.join(obsidianMount.hostPath, 'Logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr =
+      String(now.getUTCHours()).padStart(2, '0') +
+      ':' +
+      String(now.getUTCMinutes()).padStart(2, '0') +
+      'Z';
+
+    // Strip injected context wrapper before logging the prompt
+    const cleanPrompt = prompt
+      .replace(/^<injected_context>[\s\S]*?<\/injected_context>\n\n/, '')
+      .trim();
+
+    // First line of prompt as entry title
+    const firstLine = cleanPrompt
+      .split('\n')[0]
+      .replace(/[#*`]/g, '')
+      .trim()
+      .slice(0, 80);
+    const taskTag = isScheduledTask ? ' `[scheduled]`' : '';
+    const durationSec = (durationMs / 1000).toFixed(1);
+
+    const promptSection =
+      cleanPrompt.length > 2000
+        ? cleanPrompt.slice(0, 2000) + '\n…*(truncated)*'
+        : cleanPrompt;
+
+    const responseSection =
+      results.length > 0
+        ? results.join('\n\n')
+        : status === 'error'
+          ? '*(error — no output)*'
+          : '*(no output)*';
+
+    const entry = [
+      `## ${timeStr} — ${firstLine}${taskTag}`,
+      ``,
+      `**Group:** ${group.name} | **Duration:** ${durationSec}s | **Status:** ${status}`,
+      ``,
+      `### Request`,
+      ``,
+      promptSection,
+      ``,
+      `### Response`,
+      ``,
+      responseSection,
+      ``,
+      `---`,
+      ``,
+    ].join('\n');
+
+    const logFile = path.join(logsDir, `${dateStr}.md`);
+    if (!fs.existsSync(logFile)) {
+      fs.writeFileSync(logFile, `# ${dateStr}\n\n`);
+    }
+    fs.appendFileSync(logFile, entry);
+    logger.debug({ group: group.name, logFile }, 'Obsidian log appended');
+  } catch (err) {
+    logger.warn({ group: group.name, err }, 'Failed to write Obsidian log');
+  }
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -398,6 +489,8 @@ export async function runContainerAgent(
     let parseBuffer = '';
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
+    // Collect agent responses for Obsidian logging
+    const streamedResults: string[] = [];
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
@@ -434,6 +527,9 @@ export async function runContainerAgent(
             const parsed: ContainerOutput = JSON.parse(jsonStr);
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
+            }
+            if (parsed.result) {
+              streamedResults.push(parsed.result);
             }
             hadStreamingOutput = true;
             // Activity detected — reset the hard timeout
@@ -534,6 +630,14 @@ export async function runContainerAgent(
             'Container timed out after output (idle cleanup)',
           );
           outputChain.then(() => {
+            writeObsidianLog(
+              group,
+              input.prompt,
+              streamedResults,
+              'success',
+              duration,
+              input.isScheduledTask ?? false,
+            );
             resolve({
               status: 'success',
               result: null,
@@ -548,6 +652,14 @@ export async function runContainerAgent(
           'Container timed out with no output',
         );
 
+        writeObsidianLog(
+          group,
+          input.prompt,
+          streamedResults,
+          'error',
+          duration,
+          input.isScheduledTask ?? false,
+        );
         resolve({
           status: 'error',
           result: null,
@@ -627,6 +739,14 @@ export async function runContainerAgent(
           'Container exited with error',
         );
 
+        writeObsidianLog(
+          group,
+          input.prompt,
+          streamedResults,
+          'error',
+          duration,
+          input.isScheduledTask ?? false,
+        );
         resolve({
           status: 'error',
           result: null,
@@ -641,6 +761,14 @@ export async function runContainerAgent(
           logger.info(
             { group: group.name, duration, newSessionId },
             'Container completed (streaming mode)',
+          );
+          writeObsidianLog(
+            group,
+            input.prompt,
+            streamedResults,
+            'success',
+            duration,
+            input.isScheduledTask ?? false,
           );
           resolve({
             status: 'success',
@@ -680,6 +808,14 @@ export async function runContainerAgent(
           'Container completed',
         );
 
+        writeObsidianLog(
+          group,
+          input.prompt,
+          output.result ? [output.result] : [],
+          output.status,
+          duration,
+          input.isScheduledTask ?? false,
+        );
         resolve(output);
       } catch (err) {
         logger.error(

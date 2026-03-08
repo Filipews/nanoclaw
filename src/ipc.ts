@@ -8,10 +8,11 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { ButtonAction, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessageWithButtons?: (jid: string, text: string, buttons: ButtonAction[]) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -89,6 +90,43 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   logger.warn(
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
+                  );
+                }
+              } else if (
+                data.type === 'message_with_buttons' &&
+                data.chatJid &&
+                data.text &&
+                Array.isArray(data.buttons)
+              ) {
+                const targetGroup = registeredGroups[data.chatJid];
+                if (
+                  isMain ||
+                  (targetGroup && targetGroup.folder === sourceGroup)
+                ) {
+                  if (deps.sendMessageWithButtons) {
+                    await deps.sendMessageWithButtons(
+                      data.chatJid,
+                      data.text,
+                      data.buttons as ButtonAction[],
+                    );
+                  } else {
+                    // Fallback: send as plain text if channel doesn't support buttons
+                    const buttonList = (data.buttons as ButtonAction[])
+                      .map((b) => `• ${b.label}`)
+                      .join('\n');
+                    await deps.sendMessage(
+                      data.chatJid,
+                      `${data.text}\n\n${buttonList}`,
+                    );
+                  }
+                  logger.info(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'IPC message_with_buttons sent',
+                  );
+                } else {
+                  logger.warn(
+                    { chatJid: data.chatJid, sourceGroup },
+                    'Unauthorized IPC message_with_buttons attempt blocked',
                   );
                 }
               }

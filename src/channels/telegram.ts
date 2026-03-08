@@ -1,10 +1,11 @@
-import { Bot } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
+  ButtonAction,
   Channel,
   OnChatMetadata,
   OnInboundMessage,
@@ -50,6 +51,78 @@ export class TelegramChannel implements Channel {
     // Command to check bot status
     this.bot.command('ping', (ctx) => {
       ctx.reply(`${ASSISTANT_NAME} is online.`);
+    });
+
+    // Debug command: sends a test message with inline buttons
+    this.bot.command('testbuttons', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      await this.sendMessageWithButtons(chatJid, '🧪 Test message with buttons', [
+        { label: '✓ Whitelist', value: 'email_action:whitelist:test@example.com' },
+        { label: '✗ Block', value: 'email_action:block:test@example.com' },
+        { label: '– Ignore', value: 'email_action:ignore:test@example.com' },
+      ]);
+    });
+
+    // Handle inline button taps (callback queries)
+    this.bot.on('callback_query:data', async (ctx) => {
+      const callbackData = ctx.callbackQuery.data;
+
+      // 1. Answer immediately to dismiss the loading spinner
+      await ctx.answerCallbackQuery();
+
+      // 2. Edit the original message: append which button was tapped, remove keyboard
+      const msg = ctx.callbackQuery.message;
+      if (msg && 'text' in msg) {
+        // Find the button label from the stored keyboard
+        let buttonLabel = callbackData;
+        if (msg.reply_markup?.inline_keyboard) {
+          for (const row of msg.reply_markup.inline_keyboard) {
+            for (const btn of row) {
+              if ('callback_data' in btn && btn.callback_data === callbackData) {
+                buttonLabel = btn.text;
+                break;
+              }
+            }
+          }
+        }
+        try {
+          await ctx.editMessageText(
+            `${msg.text}\n\n✓ ${buttonLabel}`,
+            { reply_markup: new InlineKeyboard() },
+          );
+        } catch (err) {
+          logger.debug({ err }, 'Failed to edit callback query message');
+        }
+      }
+
+      // 3. Route the callback as an inbound message (same as if the user typed it)
+      const chatId = msg?.chat.id ?? ctx.from.id;
+      const chatJid = `tg:${chatId}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) {
+        logger.debug({ chatJid, callbackData }, 'Callback from unregistered chat, ignoring');
+        return;
+      }
+
+      const timestamp = new Date().toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id.toString() ||
+        'Unknown';
+      const sender = ctx.from?.id.toString() || '';
+
+      this.opts.onMessage(chatJid, {
+        id: `cb-${ctx.callbackQuery.id}`,
+        chat_jid: chatJid,
+        sender,
+        sender_name: senderName,
+        content: callbackData,
+        timestamp,
+        is_from_me: false,
+      });
+
+      logger.info({ chatJid, callbackData, sender: senderName }, 'Callback query routed as message');
     });
 
     this.bot.on('message:text', async (ctx) => {
@@ -227,6 +300,34 @@ export class TelegramChannel implements Channel {
       logger.info({ jid, length: text.length }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
+    }
+  }
+
+  async sendMessageWithButtons(
+    jid: string,
+    text: string,
+    buttons: ButtonAction[],
+  ): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const keyboard = new InlineKeyboard();
+      buttons.forEach((btn, i) => {
+        keyboard.text(btn.label, btn.value);
+        if (i < buttons.length - 1) keyboard.row();
+      });
+
+      await this.bot.api.sendMessage(numericId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard,
+      });
+      logger.info({ jid, buttonCount: buttons.length }, 'Telegram message with buttons sent');
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Telegram message with buttons');
     }
   }
 

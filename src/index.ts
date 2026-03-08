@@ -553,6 +553,16 @@ async function main(): Promise<void> {
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
     },
+    sendMessageWithButtons: (jid, text, buttons) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      if (channel.sendMessageWithButtons) {
+        return channel.sendMessageWithButtons(jid, text, buttons);
+      }
+      // Fallback for channels without button support
+      const buttonList = buttons.map((b) => `• ${b.label}`).join('\n');
+      return channel.sendMessage(jid, `${text}\n\n${buttonList}`);
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

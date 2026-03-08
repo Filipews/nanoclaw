@@ -64,6 +64,32 @@ server.tool(
 );
 
 server.tool(
+  'send_message_with_buttons',
+  "Send a message with tappable inline keyboard buttons. Use for prompts that require a choice (e.g. Whitelist / Block / Ignore). Each button appears on its own row. When a button is tapped, its value is delivered as a new inbound message.",
+  {
+    message: z.string().describe('The message text to send (supports Markdown)'),
+    buttons: z.array(z.object({
+      label: z.string().describe('Button text shown on screen'),
+      value: z.string().describe('Callback data delivered when tapped (e.g. "email_action:whitelist:foo@example.com")'),
+    })).min(1).max(10).describe('Buttons to attach — one per row, stacked vertically'),
+  },
+  async (args) => {
+    const data = {
+      type: 'message_with_buttons',
+      chatJid,
+      text: args.message,
+      buttons: args.buttons,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Message with buttons sent.' }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
