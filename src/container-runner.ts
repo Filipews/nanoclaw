@@ -121,28 +121,35 @@ function buildVolumeMounts(
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
+  // Read existing settings or start with defaults; always merge mcpServers so
+  // new MCP servers are picked up by existing groups without wiping their config.
+  let settings: Record<string, unknown> = {
+    env: {
+      // Enable agent swarms (subagent orchestration)
+      // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
+      CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+      // Load CLAUDE.md from additional mounted directories
+      // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
+      CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+      // Enable Claude's memory feature (persists user preferences between sessions)
+      // https://code.claude.com/docs/en/memory#manage-auto-memory
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+    },
+  };
+  if (fs.existsSync(settingsFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      // keep defaults if file is malformed
+    }
   }
+  // Always ensure the Google Workspace MCP server is registered.
+  // Credentials stay on the host — the agent sees only tools via HTTP.
+  settings.mcpServers = {
+    ...(settings.mcpServers as Record<string, unknown> | undefined),
+    google: { url: 'http://host.docker.internal:3100/sse' },
+  };
+  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
 
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
@@ -188,8 +195,22 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+  if (fs.existsSync(agentRunnerSrc)) {
+    // Always sync canonical files (by mtime) so updates to container/agent-runner/src/
+    // propagate to all groups. Groups can still add new files; only canonical files
+    // are overwritten when the source is newer.
+    fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
+    for (const file of fs.readdirSync(agentRunnerSrc)) {
+      const srcFile = path.join(agentRunnerSrc, file);
+      const dstFile = path.join(groupAgentRunnerDir, file);
+      if (!fs.statSync(srcFile).isFile()) continue;
+      const srcMtime = fs.statSync(srcFile).mtimeMs;
+      const dstMtime = fs.existsSync(dstFile) ? fs.statSync(dstFile).mtimeMs : 0;
+      if (srcMtime > dstMtime) {
+        fs.copyFileSync(srcFile, dstFile);
+        logger.debug({ group: group.folder, file }, 'Synced agent-runner source file');
+      }
+    }
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
@@ -249,6 +270,9 @@ function buildContainerArgs(
       args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
     }
   }
+
+  // Allow containers to reach host services (e.g. safe-google-mcp on 127.0.0.1:3100)
+  args.push('--add-host=host.docker.internal:host-gateway');
 
   args.push(CONTAINER_IMAGE);
 
