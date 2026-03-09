@@ -99,6 +99,16 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_cost_log_timestamp ON cost_log(timestamp);
     CREATE INDEX IF NOT EXISTS idx_cost_log_source ON cost_log(source);
+
+    CREATE TABLE IF NOT EXISTS heartbeat_result_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      check_id TEXT NOT NULL,
+      result TEXT NOT NULL,
+      summary TEXT,
+      escalated INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_heartbeat_result_log ON heartbeat_result_log(timestamp, check_id);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -698,7 +708,7 @@ function migrateJsonState(): void {
     }
   }
 
-  // Migrate registered_groups.json
+  // Migrate registered_groups.json (keep last so other migrations run first)
   const groups = migrateFile('registered_groups.json') as Record<
     string,
     RegisteredGroup
@@ -715,4 +725,27 @@ function migrateJsonState(): void {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat result log
+// ---------------------------------------------------------------------------
+
+export interface HeartbeatResultData {
+  checkId: string;
+  result: string;   // 'HEARTBEAT_OK' | 'HEARTBEAT_ALERT'
+  summary?: string;
+  escalated: boolean;
+}
+
+export function logHeartbeatResult(
+  database: Database.Database,
+  data: HeartbeatResultData,
+): void {
+  database
+    .prepare(
+      `INSERT INTO heartbeat_result_log (check_id, result, summary, escalated)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(data.checkId, data.result, data.summary ?? null, data.escalated ? 1 : 0);
 }

@@ -14,6 +14,8 @@ const envConfig = readEnvFile([
   'HEARTBEAT_ACTIVE_START',
   'HEARTBEAT_ACTIVE_END',
   'HEARTBEAT_TIMEZONE',
+  'HEARTBEAT_TRIAGE_MODEL',
+  'HEARTBEAT_ESCALATION_MODEL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -91,13 +93,17 @@ export const HEARTBEAT_ACTIVE_START =
   envConfig.HEARTBEAT_ACTIVE_START ||
   '07:00';
 export const HEARTBEAT_ACTIVE_END =
-  process.env.HEARTBEAT_ACTIVE_END ||
-  envConfig.HEARTBEAT_ACTIVE_END ||
-  '23:00';
+  process.env.HEARTBEAT_ACTIVE_END || envConfig.HEARTBEAT_ACTIVE_END || '23:00';
 export const HEARTBEAT_TIMEZONE =
-  process.env.HEARTBEAT_TIMEZONE ||
-  envConfig.HEARTBEAT_TIMEZONE ||
-  TIMEZONE;
+  process.env.HEARTBEAT_TIMEZONE || envConfig.HEARTBEAT_TIMEZONE || TIMEZONE;
+export const HEARTBEAT_TRIAGE_MODEL =
+  process.env.HEARTBEAT_TRIAGE_MODEL ||
+  envConfig.HEARTBEAT_TRIAGE_MODEL ||
+  'claude-haiku-4-5-20251001';
+export const HEARTBEAT_ESCALATION_MODEL =
+  process.env.HEARTBEAT_ESCALATION_MODEL ||
+  envConfig.HEARTBEAT_ESCALATION_MODEL ||
+  'claude-sonnet-4-6';
 
 // Ensure process.env.TZ matches the configured timezone so that
 // naive timestamp strings (no Z suffix) passed to new Date() on the

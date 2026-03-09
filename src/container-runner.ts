@@ -39,7 +39,10 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
-  checkId?: string; // for heartbeat cost attribution
+  checkId?: string;        // for heartbeat cost attribution
+  source?: string;         // override cost-log source (e.g. 'heartbeat_triage')
+  modelOverride?: string;  // model passed to query() in agent-runner
+  maxTurns?: number;       // max agentic turns passed to query()
   assistantName?: string;
   secrets?: Record<string, string>;
 }
@@ -441,8 +444,12 @@ function readTranscriptUsage(
 ): ContainerUsage | undefined {
   if (!sessionId) return undefined;
   const transcriptPath = path.join(
-    DATA_DIR, 'sessions', groupFolder,
-    '.claude', 'projects', '-workspace-group',
+    DATA_DIR,
+    'sessions',
+    groupFolder,
+    '.claude',
+    'projects',
+    '-workspace-group',
     `${sessionId}.jsonl`,
   );
   if (!fs.existsSync(transcriptPath)) return undefined;
@@ -459,12 +466,19 @@ function readTranscriptUsage(
     for (const line of content.split('\n')) {
       if (!line.trim()) continue;
       let entry: Record<string, unknown>;
-      try { entry = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
 
       if (entry.type !== 'assistant') continue;
-      if (typeof entry.timestamp === 'string' && entry.timestamp < sinceIso) continue;
+      if (typeof entry.timestamp === 'string' && entry.timestamp < sinceIso)
+        continue;
 
-      const msg = entry.message as { usage?: Record<string, number>; model?: string } | undefined;
+      const msg = entry.message as
+        | { usage?: Record<string, number>; model?: string }
+        | undefined;
       if (msg?.usage) {
         inputTokens += msg.usage.input_tokens ?? 0;
         outputTokens += msg.usage.output_tokens ?? 0;
@@ -474,12 +488,21 @@ function readTranscriptUsage(
       if (msg?.model && !model) model = msg.model;
     }
   } catch (err) {
-    logger.debug({ err, groupFolder, sessionId }, 'Failed to parse transcript for usage');
+    logger.debug(
+      { err, groupFolder, sessionId },
+      'Failed to parse transcript for usage',
+    );
     return undefined;
   }
 
   if (inputTokens + outputTokens === 0) return undefined;
-  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, model: model || 'unknown' };
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    model: model || 'unknown',
+  };
 }
 
 export async function runContainerAgent(
@@ -603,9 +626,12 @@ export async function runContainerAgent(
               } else {
                 accumulatedUsage.inputTokens += parsed.usage.inputTokens;
                 accumulatedUsage.outputTokens += parsed.usage.outputTokens;
-                accumulatedUsage.cacheReadTokens += parsed.usage.cacheReadTokens;
-                accumulatedUsage.cacheWriteTokens += parsed.usage.cacheWriteTokens;
-                if (parsed.usage.model) accumulatedUsage.model = parsed.usage.model;
+                accumulatedUsage.cacheReadTokens +=
+                  parsed.usage.cacheReadTokens;
+                accumulatedUsage.cacheWriteTokens +=
+                  parsed.usage.cacheWriteTokens;
+                if (parsed.usage.model)
+                  accumulatedUsage.model = parsed.usage.model;
               }
             }
             hadStreamingOutput = true;
@@ -681,13 +707,23 @@ export async function runContainerAgent(
     const logCost = (duration: number) => {
       // Primary: parse the SDK JSONL transcript for reliable usage data.
       // Fallback: use usage emitted by agent runner in ContainerOutput.
-      let usage = readTranscriptUsage(group.folder, newSessionId || input.sessionId, startTime);
-      if (!usage && accumulatedUsage && accumulatedUsage.inputTokens + accumulatedUsage.outputTokens > 0) {
+      let usage = readTranscriptUsage(
+        group.folder,
+        newSessionId || input.sessionId,
+        startTime,
+      );
+      if (
+        !usage &&
+        accumulatedUsage &&
+        accumulatedUsage.inputTokens + accumulatedUsage.outputTokens > 0
+      ) {
         usage = accumulatedUsage;
       }
       if (!usage) return;
 
-      const source = input.isScheduledTask ? 'scheduled_task' : 'user_message';
+      const source =
+        input.source ??
+        (input.isScheduledTask ? 'scheduled_task' : 'user_message');
       try {
         logInvocation(getDb(), {
           source,

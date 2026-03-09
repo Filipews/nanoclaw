@@ -7,8 +7,11 @@ import {
   GROUPS_DIR,
   HEARTBEAT_INTERVAL_MINUTES,
   HEARTBEAT_TIMEZONE,
+  HEARTBEAT_TRIAGE_MODEL,
+  HEARTBEAT_ESCALATION_MODEL,
 } from './config.js';
 import { ContainerOutput, runContainerAgent } from './container-runner.js';
+import { getDb, logHeartbeatResult } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -19,6 +22,7 @@ import {
   HeartbeatTickResult,
   TriageResult,
 } from './heartbeat-types.js';
+import { HEARTBEAT_CHECKS } from './heartbeat-checks.js';
 
 export interface HeartbeatDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -38,121 +42,8 @@ export interface HeartbeatRunner {
 
 const STATE_PATH = path.join(GROUPS_DIR, 'personal', 'heartbeat-state.json');
 
-export const DEFAULT_CHECKS: HeartbeatCheck[] = [
-  {
-    id: 'gmail-inbox',
-    name: 'Gmail Inbox',
-    cadence: 30,
-    activeWindow: { start: '08:00', end: '20:00' },
-    priority: 10,
-    enabled: true,
-    prompt: `Check Gmail inbox for urgent or important emails that need attention.
-Scan for anything flagged urgent, from important senders, or time-sensitive.
-Summarize any action items briefly.
-When done, output on a new line exactly:
-TRIAGE_RESULT:
-{"status":"HEARTBEAT_OK","checkId":"gmail-inbox","summary":"..."}
-If there is something urgent requiring attention, use HEARTBEAT_ALERT and set actionNeeded accordingly.
-Do not wrap the JSON in a code block.`,
-    escalationTrigger: 'urgent email found',
-  },
-  {
-    id: 'calendar',
-    name: 'Calendar',
-    cadence: 60,
-    activeWindow: { start: '07:00', end: '22:00' },
-    priority: 9,
-    enabled: true,
-    prompt: `Check upcoming calendar events in the next 48 hours.
-Look for conflicts, imminent events (within 1 hour), and preparation needed.
-When done, output on a new line exactly:
-TRIAGE_RESULT:
-{"status":"HEARTBEAT_OK","checkId":"calendar","summary":"..."}
-If there is a conflict or imminent event, use HEARTBEAT_ALERT and set actionNeeded accordingly.
-Do not wrap the JSON in a code block.`,
-    escalationTrigger: 'event conflict or imminent event',
-  },
-  {
-    id: 'needs-reply',
-    name: 'Needs Reply',
-    cadence: 240,
-    activeWindow: { start: '10:00', end: '19:00' },
-    priority: 8,
-    enabled: true,
-    prompt: `Check for emails or messages awaiting a reply for more than 4 hours.
-Look through Gmail sent/inbox for threads where a reply is expected but not yet sent.
-When done, output on a new line exactly:
-TRIAGE_RESULT:
-{"status":"HEARTBEAT_OK","checkId":"needs-reply","summary":"..."}
-If there are replies overdue more than 8 hours, use HEARTBEAT_ALERT and set actionNeeded accordingly.
-Do not wrap the JSON in a code block.`,
-    escalationTrigger: 'reply overdue > 8h',
-  },
-  {
-    id: 'tasks',
-    name: 'Tasks',
-    cadence: 60,
-    activeWindow: { start: '08:00', end: '21:00' },
-    priority: 7,
-    enabled: true,
-    prompt: `Scan /workspace/obsidian/Eve/Inbox/ and tasks for overdue items.
-Check Tasks inbox.md and any active task lists for overdue or blocked tasks.
-When done, output on a new line exactly:
-TRIAGE_RESULT:
-{"status":"HEARTBEAT_OK","checkId":"tasks","summary":"..."}
-If there are overdue tasks, use HEARTBEAT_ALERT and set actionNeeded accordingly.
-Do not wrap the JSON in a code block.`,
-    escalationTrigger: 'overdue task found',
-  },
-  {
-    id: 'prices',
-    name: 'Prices',
-    cadence: 1440,
-    activeWindow: { start: '07:00', end: '08:00' },
-    priority: 3,
-    enabled: true,
-    prompt: `Run the Watch List price check per the Price Research skill (if available).
-Check current prices against any tracked targets in /workspace/group/ or /workspace/obsidian/.
-When done, output on a new line exactly:
-TRIAGE_RESULT:
-{"status":"HEARTBEAT_OK","checkId":"prices","summary":"..."}
-If any price target is met, use HEARTBEAT_ALERT and set actionNeeded accordingly.
-Do not wrap the JSON in a code block.`,
-    escalationTrigger: 'price target met',
-  },
-  {
-    id: 'daily-files',
-    name: 'Daily Files',
-    cadence: 480,
-    activeWindow: { start: '08:00', end: '22:00' },
-    priority: 2,
-    enabled: true,
-    prompt: `Check /workspace/obsidian/Eve/Inbox/ for new unprocessed files.
-List any new documents, PDFs, or files that have not been processed yet.
-When done, output on a new line exactly:
-TRIAGE_RESULT:
-{"status":"HEARTBEAT_OK","checkId":"daily-files","summary":"..."}
-If new unprocessed files are found, use HEARTBEAT_ALERT and set actionNeeded accordingly.
-Do not wrap the JSON in a code block.`,
-    escalationTrigger: 'new unprocessed file found',
-  },
-  {
-    id: 'vault-health',
-    name: 'Vault Health',
-    cadence: 10080,
-    activeWindow: { start: '09:00', end: '10:00' },
-    priority: 1,
-    enabled: true,
-    prompt: `Verify Obsidian vault structure and ledger continuity.
-Check that daily notes are present, ledger entries are consistent, and no broken links in key files.
-When done, output on a new line exactly:
-TRIAGE_RESULT:
-{"status":"HEARTBEAT_OK","checkId":"vault-health","summary":"..."}
-If there is a vault inconsistency, use HEARTBEAT_ALERT and set actionNeeded accordingly.
-Do not wrap the JSON in a code block.`,
-    escalationTrigger: 'vault inconsistency found',
-  },
-];
+// Re-export checks so Telegram /heartbeat_status and tests can import from one place
+export { HEARTBEAT_CHECKS as DEFAULT_CHECKS };
 
 function readState(): HeartbeatState {
   try {
@@ -247,28 +138,87 @@ export function pickNextCheck(
   return best;
 }
 
-function parseTriageResult(text: string): TriageResult | null {
-  const marker = 'TRIAGE_RESULT:';
-  const idx = text.indexOf(marker);
-  if (idx === -1) return null;
+/**
+ * Parse the triage result from agent output.
+ *
+ * Supported plain-text format (preferred, Haiku-friendly):
+ *   HEARTBEAT_OK
+ * or:
+ *   HEARTBEAT_ALERT
+ *   action: notify_only | escalate_to_agent | escalate_to_browser
+ *   summary: <text>
+ *   priority: low | medium | high | critical
+ *
+ * Also accepts legacy JSON format for backward compatibility:
+ *   TRIAGE_RESULT:
+ *   {"status":"HEARTBEAT_OK",...}
+ */
+function parseTriageResult(text: string, checkId: string): TriageResult | null {
+  // Plain-text format: scan for HEARTBEAT_OK or HEARTBEAT_ALERT
+  const okIdx = text.lastIndexOf('HEARTBEAT_OK');
+  const alertIdx = text.lastIndexOf('HEARTBEAT_ALERT');
 
-  const after = text.slice(idx + marker.length).trim();
-  const firstLine = after.split('\n')[0].trim();
-  try {
-    return JSON.parse(firstLine) as TriageResult;
-  } catch {
-    // Try the second line in case there's a blank line between marker and JSON
+  if (okIdx === -1 && alertIdx === -1) {
+    // Fall back to legacy JSON format
+    const marker = 'TRIAGE_RESULT:';
+    const markerIdx = text.indexOf(marker);
+    if (markerIdx === -1) {
+      logger.warn({ text: text.slice(-300) }, 'No TRIAGE_RESULT found in agent output');
+      return null;
+    }
+    const after = text.slice(markerIdx + marker.length).trim();
     const lines = after.split('\n').filter((l) => l.trim());
-    if (lines.length > 0) {
+    for (const line of lines) {
       try {
-        return JSON.parse(lines[0]) as TriageResult;
+        return JSON.parse(line) as TriageResult;
       } catch {
-        // ignore
+        continue;
       }
     }
     logger.warn({ after: after.slice(0, 200) }, 'Failed to parse TRIAGE_RESULT JSON');
     return null;
   }
+
+  // Use whichever appears later in the text (last occurrence wins in case of retries)
+  if (okIdx > alertIdx) {
+    return { status: 'HEARTBEAT_OK', checkId };
+  }
+
+  // Parse HEARTBEAT_ALERT block
+  const block = text.slice(alertIdx);
+  const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  let actionNeeded: TriageResult['actionNeeded'];
+  let summary: string | undefined;
+  let priority: TriageResult['priority'];
+
+  for (const line of lines.slice(1)) {
+    if (line.startsWith('action:')) {
+      const val = line.slice('action:'.length).trim();
+      if (
+        val === 'notify_only' ||
+        val === 'escalate_to_agent' ||
+        val === 'escalate_to_browser'
+      ) {
+        actionNeeded = val;
+      }
+    } else if (line.startsWith('summary:')) {
+      summary = line.slice('summary:'.length).trim();
+    } else if (line.startsWith('priority:')) {
+      const val = line.slice('priority:'.length).trim();
+      if (val === 'low' || val === 'medium' || val === 'high' || val === 'critical') {
+        priority = val;
+      }
+    }
+  }
+
+  return {
+    status: 'HEARTBEAT_ALERT',
+    checkId,
+    summary,
+    priority,
+    actionNeeded,
+  };
 }
 
 async function runSingleCheck(
@@ -297,6 +247,9 @@ async function runSingleCheck(
         isMain: false,
         isScheduledTask: true,
         checkId: check.id,
+        source: 'heartbeat_triage',
+        modelOverride: HEARTBEAT_TRIAGE_MODEL,
+        maxTurns: 5,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
@@ -315,7 +268,7 @@ async function runSingleCheck(
     if (output.status === 'error') {
       return { triage: null, text, error: output.error || 'Container error' };
     }
-    return { triage: parseTriageResult(text), text };
+    return { triage: parseTriageResult(text, check.id), text };
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
     const error = err instanceof Error ? err.message : String(err);
@@ -333,13 +286,17 @@ async function runEscalation(
   const CLOSE_DELAY_MS = 10_000;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const escalationPrompt = `${check.escalationTrigger.toUpperCase()} — take appropriate action.
-Context: ${triage.summary || 'No summary provided.'}
-Check: ${check.name}
-Please investigate and handle this escalation. Use available tools to take action if needed.`;
+  const escalationPrompt = `[HEARTBEAT ESCALATION: ${check.name}]
+
+Trigger: ${check.escalationTrigger}
+Triage summary: ${triage.summary || 'No summary provided.'}
+Priority: ${triage.priority || 'unknown'}
+
+Investigate the issue described above and take appropriate action using available tools.
+Report back what you found and what action you took.`;
 
   try {
-    await runContainerAgent(
+    const output = await runContainerAgent(
       group,
       {
         prompt: escalationPrompt,
@@ -349,6 +306,9 @@ Please investigate and handle this escalation. Use available tools to take actio
         isMain: false,
         isScheduledTask: true,
         checkId: check.id,
+        source: 'heartbeat_escalation',
+        modelOverride: HEARTBEAT_ESCALATION_MODEL,
+        maxTurns: 30,
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
@@ -363,6 +323,12 @@ Please investigate and handle this escalation. Use available tools to take actio
       },
     );
     if (closeTimer) clearTimeout(closeTimer);
+    // Forward escalation result to the user
+    if (output.result) {
+      await deps.sendMessage(jid, `[${check.name} escalation]\n${output.result}`).catch((err) =>
+        logger.warn({ err }, 'Failed to send escalation result'),
+      );
+    }
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
     logger.error({ err, checkId: check.id }, 'Escalation failed');
@@ -378,7 +344,9 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   );
 
   if (!groupEntry) {
-    logger.debug('Heartbeat: no personal/telegram_eve group found, skipping tick');
+    logger.debug(
+      'Heartbeat: no personal/telegram_eve group found, skipping tick',
+    );
     return { checkId: null, checkName: null, status: 'skipped' };
   }
 
@@ -386,7 +354,7 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   const now = new Date();
   const state = readState();
 
-  const check = pickNextCheck(DEFAULT_CHECKS, state, now, HEARTBEAT_TIMEZONE);
+  const check = pickNextCheck(HEARTBEAT_CHECKS, state, now, HEARTBEAT_TIMEZONE);
 
   if (!check) {
     logger.debug('Heartbeat: no check due this tick');
@@ -395,7 +363,10 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
     return { checkId: null, checkName: null, status: 'skipped' };
   }
 
-  logger.info({ checkId: check.id, checkName: check.name }, 'Heartbeat: running check');
+  logger.info(
+    { checkId: check.id, checkName: check.name },
+    'Heartbeat: running check',
+  );
 
   const { triage, error } = await runSingleCheck(check, group, jid, deps);
 
@@ -404,7 +375,12 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   if (error) {
     logger.error({ checkId: check.id, error }, 'Heartbeat check error');
     writeState(state);
-    return { checkId: check.id, checkName: check.name, status: 'error', summary: error };
+    return {
+      checkId: check.id,
+      checkName: check.name,
+      status: 'error',
+      summary: error,
+    };
   }
 
   const isAlert = triage?.status === 'HEARTBEAT_ALERT';
@@ -420,25 +396,49 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   };
   writeState(state);
 
+  const willEscalate =
+    isAlert &&
+    triage != null &&
+    (triage.actionNeeded === 'escalate_to_agent' ||
+      triage.actionNeeded === 'escalate_to_browser');
+
+  // Log to heartbeat_result_log
+  try {
+    logHeartbeatResult(getDb(), {
+      checkId: check.id,
+      result: isAlert ? 'HEARTBEAT_ALERT' : 'HEARTBEAT_OK',
+      summary,
+      escalated: willEscalate,
+    });
+  } catch (err) {
+    logger.warn({ err }, 'Failed to log heartbeat result to DB');
+  }
+
   if (isAlert) {
     logger.info({ checkId: check.id, summary }, 'Heartbeat ALERT');
 
     // Send notification
     const notifyText = `⚠️ [${check.name}]${summary ? ': ' + summary : ''}`;
-    await deps.sendMessage(jid, notifyText).catch((err) =>
-      logger.warn({ err, jid }, 'Heartbeat: failed to send alert notification'),
-    );
+    await deps
+      .sendMessage(jid, notifyText)
+      .catch((err) =>
+        logger.warn(
+          { err, jid },
+          'Heartbeat: failed to send alert notification',
+        ),
+      );
 
     // Escalation
-    if (
-      triage &&
-      (triage.actionNeeded === 'escalate_to_agent' ||
-        triage.actionNeeded === 'escalate_to_browser')
-    ) {
+    if (willEscalate && triage) {
       await runEscalation(check, triage, group, jid, deps);
     }
 
-    return { checkId: check.id, checkName: check.name, status: 'alert', summary };
+    return {
+      checkId: check.id,
+      checkName: check.name,
+      status: 'alert',
+      summary,
+    };
   }
 
   logger.info({ checkId: check.id }, 'Heartbeat OK');
@@ -447,7 +447,9 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
 
 let running = false;
 
-export function startHeartbeatRunner(deps: HeartbeatDependencies): HeartbeatRunner {
+export function startHeartbeatRunner(
+  deps: HeartbeatDependencies,
+): HeartbeatRunner {
   if (running) return { runTick: () => tick(deps) };
   running = true;
   logger.info(

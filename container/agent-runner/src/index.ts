@@ -26,6 +26,8 @@ interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  modelOverride?: string;
+  maxTurns?: number;
   assistantName?: string;
   secrets?: Record<string, string>;
 }
@@ -368,6 +370,8 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  modelOverride?: string,
+  maxTurns?: number,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; usage: ContainerOutput['usage'] }> {
   const stream = new MessageStream();
   stream.push(prompt);
@@ -426,6 +430,11 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const effectiveModel =
+    modelOverride ??
+    process.env.DEFAULT_MODEL ??
+    'claude-sonnet-4-5-20250929';
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -433,6 +442,8 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
+      model: effectiveModel,
+      maxTurns: maxTurns,
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
@@ -589,7 +600,10 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(
+        prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt,
+        containerInput.modelOverride, containerInput.maxTurns,
+      );
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

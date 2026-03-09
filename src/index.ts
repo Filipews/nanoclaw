@@ -50,10 +50,7 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import {
-  startHeartbeatRunner,
-  HeartbeatRunner,
-} from './heartbeat-runner.js';
+import { startHeartbeatRunner, HeartbeatRunner } from './heartbeat-runner.js';
 import { HeartbeatTickResult } from './heartbeat-types.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
