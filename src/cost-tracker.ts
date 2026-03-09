@@ -16,7 +16,7 @@ const MODEL_RATES: Record<string, ModelRate> = {
     cacheRead: 0.1,
     cacheWrite: 1.25,
   },
-  'claude-sonnet-4-5-20250929': {
+  'claude-sonnet-4-6': {
     input: 3.0,
     output: 15.0,
     cacheRead: 0.3,

@@ -733,7 +733,7 @@ function migrateJsonState(): void {
 
 export interface HeartbeatResultData {
   checkId: string;
-  result: string;   // 'HEARTBEAT_OK' | 'HEARTBEAT_ALERT'
+  result: string; // 'HEARTBEAT_OK' | 'HEARTBEAT_ALERT'
   summary?: string;
   escalated: boolean;
 }
@@ -747,5 +747,10 @@ export function logHeartbeatResult(
       `INSERT INTO heartbeat_result_log (check_id, result, summary, escalated)
        VALUES (?, ?, ?, ?)`,
     )
-    .run(data.checkId, data.result, data.summary ?? null, data.escalated ? 1 : 0);
+    .run(
+      data.checkId,
+      data.result,
+      data.summary ?? null,
+      data.escalated ? 1 : 0,
+    );
 }

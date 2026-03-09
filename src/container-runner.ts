@@ -39,10 +39,10 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
-  checkId?: string;        // for heartbeat cost attribution
-  source?: string;         // override cost-log source (e.g. 'heartbeat_triage')
-  modelOverride?: string;  // model passed to query() in agent-runner
-  maxTurns?: number;       // max agentic turns passed to query()
+  checkId?: string; // for heartbeat cost attribution
+  source?: string; // override cost-log source (e.g. 'heartbeat_triage')
+  modelOverride?: string; // model passed to query() in agent-runner
+  maxTurns?: number; // max agentic turns passed to query()
   assistantName?: string;
   secrets?: Record<string, string>;
 }

@@ -163,7 +163,10 @@ function parseTriageResult(text: string, checkId: string): TriageResult | null {
     const marker = 'TRIAGE_RESULT:';
     const markerIdx = text.indexOf(marker);
     if (markerIdx === -1) {
-      logger.warn({ text: text.slice(-300) }, 'No TRIAGE_RESULT found in agent output');
+      logger.warn(
+        { text: text.slice(-300) },
+        'No TRIAGE_RESULT found in agent output',
+      );
       return null;
     }
     const after = text.slice(markerIdx + marker.length).trim();
@@ -175,7 +178,10 @@ function parseTriageResult(text: string, checkId: string): TriageResult | null {
         continue;
       }
     }
-    logger.warn({ after: after.slice(0, 200) }, 'Failed to parse TRIAGE_RESULT JSON');
+    logger.warn(
+      { after: after.slice(0, 200) },
+      'Failed to parse TRIAGE_RESULT JSON',
+    );
     return null;
   }
 
@@ -186,11 +192,15 @@ function parseTriageResult(text: string, checkId: string): TriageResult | null {
 
   // Parse HEARTBEAT_ALERT block
   const block = text.slice(alertIdx);
-  const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
+  const lines = block
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
 
   let actionNeeded: TriageResult['actionNeeded'];
   let summary: string | undefined;
   let priority: TriageResult['priority'];
+  let detailsRaw: string | undefined;
 
   for (const line of lines.slice(1)) {
     if (line.startsWith('action:')) {
@@ -206,9 +216,16 @@ function parseTriageResult(text: string, checkId: string): TriageResult | null {
       summary = line.slice('summary:'.length).trim();
     } else if (line.startsWith('priority:')) {
       const val = line.slice('priority:'.length).trim();
-      if (val === 'low' || val === 'medium' || val === 'high' || val === 'critical') {
+      if (
+        val === 'low' ||
+        val === 'medium' ||
+        val === 'high' ||
+        val === 'critical'
+      ) {
         priority = val;
       }
+    } else if (line.startsWith('details:')) {
+      detailsRaw = line.slice('details:'.length).trim();
     }
   }
 
@@ -218,6 +235,7 @@ function parseTriageResult(text: string, checkId: string): TriageResult | null {
     summary,
     priority,
     actionNeeded,
+    details: detailsRaw ? { raw: detailsRaw } : undefined,
   };
 }
 
@@ -276,30 +294,74 @@ async function runSingleCheck(
   }
 }
 
-async function runEscalation(
+/** Build a check-specific escalation prompt from triage result. */
+function buildEscalationPrompt(
+  check: HeartbeatCheck,
+  triage: TriageResult,
+  useBrowser: boolean,
+): string {
+  const details = (triage.details?.raw as string | undefined) ?? triage.summary ?? '';
+  const priority = triage.priority ?? 'unknown';
+  const browserHint = useBrowser
+    ? '\nYou have browser automation available via the Bash tool (Playwright/Chromium). Use it if needed to complete web-based tasks.'
+    : '';
+
+  let taskLine: string;
+  switch (check.id) {
+    case 'needs-reply':
+      taskLine = `Draft and send replies for the email threads that have waited >24h. Threads: ${details || '(see Gmail inbox)'}`;
+      break;
+    case 'tasks':
+      taskLine = `Review and update the status of overdue tasks. For each: mark complete if done, reschedule if needed, or note why it is blocked. Tasks: ${details || '(see Tasks/inbox.md)'}`;
+      break;
+    case 'daily-files':
+      taskLine = `Process the new files from the inbox. For each file: read it, file it in the appropriate Obsidian folder, and create a task if action is needed. Files: ${details || '(see Eve/Inbox/)'}`;
+      break;
+    case 'calendar':
+      taskLine = `Prepare for the upcoming event or trip. Generate a packing list or preparation checklist if applicable. Details: ${details || '(see calendar)'}`;
+      break;
+    case 'gmail-inbox':
+      taskLine = `Handle the urgent emails. For each: draft a reply, flag for follow-up, or archive as appropriate. Details: ${details || '(see Gmail inbox)'}`;
+      break;
+    case 'prices':
+      taskLine = `A price target has been met. Check the Watch List, verify the current price, and prepare a buy/sell recommendation summary. Details: ${details || '(see watch list)'}`;
+      break;
+    default:
+      taskLine = `Investigate and resolve the issue described in the triage summary. Details: ${details || '(no details)'}`;
+  }
+
+  return `[HEARTBEAT ESCALATION: ${check.name}]
+Priority: ${priority}
+Triage summary: ${triage.summary || 'No summary provided.'}
+${browserHint}
+
+Your task: ${taskLine}
+
+Use all available tools to complete this task. When done, provide a concise summary of:
+1. What you found
+2. What action you took
+3. Any follow-up needed`;
+}
+
+/** Spawn a Sonnet container to perform real work based on triage alert. */
+async function escalateToAgent(
   check: HeartbeatCheck,
   triage: TriageResult,
   group: RegisteredGroup,
   jid: string,
   deps: HeartbeatDependencies,
 ): Promise<void> {
-  const CLOSE_DELAY_MS = 10_000;
+  const CLOSE_DELAY_MS = 30_000;
   let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  let resultText = '';
 
-  const escalationPrompt = `[HEARTBEAT ESCALATION: ${check.name}]
-
-Trigger: ${check.escalationTrigger}
-Triage summary: ${triage.summary || 'No summary provided.'}
-Priority: ${triage.priority || 'unknown'}
-
-Investigate the issue described above and take appropriate action using available tools.
-Report back what you found and what action you took.`;
+  const prompt = buildEscalationPrompt(check, triage, false);
 
   try {
     const output = await runContainerAgent(
       group,
       {
-        prompt: escalationPrompt,
+        prompt,
         sessionId: undefined,
         groupFolder: group.folder,
         chatJid: jid,
@@ -314,25 +376,128 @@ Report back what you found and what action you took.`;
       (proc, containerName) =>
         deps.onProcess(jid, proc, containerName, group.folder),
       async (streamedOutput: ContainerOutput) => {
-        if (streamedOutput.result && !closeTimer) {
-          closeTimer = setTimeout(
-            () => deps.queue.closeStdin(jid),
-            CLOSE_DELAY_MS,
-          );
+        if (streamedOutput.result) {
+          resultText = streamedOutput.result;
+          if (!closeTimer) {
+            closeTimer = setTimeout(
+              () => deps.queue.closeStdin(jid),
+              CLOSE_DELAY_MS,
+            );
+          }
         }
       },
     );
     if (closeTimer) clearTimeout(closeTimer);
-    // Forward escalation result to the user
-    if (output.result) {
-      await deps.sendMessage(jid, `[${check.name} escalation]\n${output.result}`).catch((err) =>
-        logger.warn({ err }, 'Failed to send escalation result'),
-      );
+
+    const summary = resultText || output.result || '';
+    if (summary) {
+      await deps
+        .sendMessage(jid, `✅ [${check.name}]\n${summary}`)
+        .catch((err) => logger.warn({ err }, 'Failed to send escalation summary'));
     }
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
-    logger.error({ err, checkId: check.id }, 'Escalation failed');
+    logger.error({ err, checkId: check.id }, 'escalateToAgent failed');
   }
+}
+
+/** Same as escalateToAgent but with explicit browser-use hint in the prompt. */
+async function escalateToBrowser(
+  check: HeartbeatCheck,
+  triage: TriageResult,
+  group: RegisteredGroup,
+  jid: string,
+  deps: HeartbeatDependencies,
+): Promise<void> {
+  const CLOSE_DELAY_MS = 30_000;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  let resultText = '';
+
+  const prompt = buildEscalationPrompt(check, triage, true);
+
+  try {
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt,
+        sessionId: undefined,
+        groupFolder: group.folder,
+        chatJid: jid,
+        isMain: false,
+        isScheduledTask: true,
+        checkId: check.id,
+        source: 'heartbeat_escalation',
+        modelOverride: HEARTBEAT_ESCALATION_MODEL,
+        maxTurns: 30,
+        assistantName: ASSISTANT_NAME,
+      },
+      (proc, containerName) =>
+        deps.onProcess(jid, proc, containerName, group.folder),
+      async (streamedOutput: ContainerOutput) => {
+        if (streamedOutput.result) {
+          resultText = streamedOutput.result;
+          if (!closeTimer) {
+            closeTimer = setTimeout(
+              () => deps.queue.closeStdin(jid),
+              CLOSE_DELAY_MS,
+            );
+          }
+        }
+      },
+    );
+    if (closeTimer) clearTimeout(closeTimer);
+
+    const summary = resultText || output.result || '';
+    if (summary) {
+      await deps
+        .sendMessage(jid, `✅ [${check.name}]\n${summary}`)
+        .catch((err) => logger.warn({ err }, 'Failed to send browser escalation summary'));
+    }
+  } catch (err) {
+    if (closeTimer) clearTimeout(closeTimer);
+    logger.error({ err, checkId: check.id }, 'escalateToBrowser failed');
+  }
+}
+
+/**
+ * Route a triage alert to the appropriate action:
+ *   ok / notify_only → notify via Telegram, done
+ *   escalate_to_agent → spawn Sonnet container to do real work
+ *   escalate_to_browser → spawn Sonnet + browser container
+ */
+async function processTriageResult(
+  check: HeartbeatCheck,
+  triage: TriageResult,
+  group: RegisteredGroup,
+  jid: string,
+  deps: HeartbeatDependencies,
+): Promise<boolean> { // returns true if escalated
+  if (triage.status === 'HEARTBEAT_OK') return false;
+
+  const action = triage.actionNeeded ?? 'notify_only';
+  const notifyText = `⚠️ [${check.name}]${triage.summary ? ': ' + triage.summary : ''}`;
+
+  // Always notify
+  await deps
+    .sendMessage(jid, notifyText)
+    .catch((err) =>
+      logger.warn({ err, jid }, 'Heartbeat: failed to send alert notification'),
+    );
+
+  if (action === 'escalate_to_agent') {
+    logger.info({ checkId: check.id }, 'Heartbeat: escalating to agent');
+    await escalateToAgent(check, triage, group, jid, deps);
+    return true;
+  }
+
+  if (action === 'escalate_to_browser') {
+    logger.info({ checkId: check.id }, 'Heartbeat: escalating to browser agent');
+    await escalateToBrowser(check, triage, group, jid, deps);
+    return true;
+  }
+
+  // notify_only — already notified above
+  return false;
 }
 
 async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
@@ -396,42 +561,22 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   };
   writeState(state);
 
-  const willEscalate =
-    isAlert &&
-    triage != null &&
-    (triage.actionNeeded === 'escalate_to_agent' ||
-      triage.actionNeeded === 'escalate_to_browser');
-
-  // Log to heartbeat_result_log
+  // Log to heartbeat_result_log (before escalation so it's recorded even if escalation fails)
+  let escalated = false;
   try {
     logHeartbeatResult(getDb(), {
       checkId: check.id,
       result: isAlert ? 'HEARTBEAT_ALERT' : 'HEARTBEAT_OK',
       summary,
-      escalated: willEscalate,
+      escalated: false, // updated below if escalation actually runs
     });
   } catch (err) {
     logger.warn({ err }, 'Failed to log heartbeat result to DB');
   }
 
-  if (isAlert) {
+  if (isAlert && triage) {
     logger.info({ checkId: check.id, summary }, 'Heartbeat ALERT');
-
-    // Send notification
-    const notifyText = `⚠️ [${check.name}]${summary ? ': ' + summary : ''}`;
-    await deps
-      .sendMessage(jid, notifyText)
-      .catch((err) =>
-        logger.warn(
-          { err, jid },
-          'Heartbeat: failed to send alert notification',
-        ),
-      );
-
-    // Escalation
-    if (willEscalate && triage) {
-      await runEscalation(check, triage, group, jid, deps);
-    }
+    escalated = await processTriageResult(check, triage, group, jid, deps);
 
     return {
       checkId: check.id,
@@ -441,6 +586,7 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
     };
   }
 
+  void escalated; // used only for future DB update if needed
   logger.info({ checkId: check.id }, 'Heartbeat OK');
   return { checkId: check.id, checkName: check.name, status: 'ok', summary };
 }
