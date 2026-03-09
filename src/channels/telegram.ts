@@ -117,13 +117,19 @@ export class TelegramChannel implements Channel {
         return;
       }
       const chatJid = `tg:${ctx.chat.id}`;
-      await ctx.reply('⏳ Heartbeat tick triggered. Result will arrive as a message when the check completes.');
+      await ctx.reply(
+        '⏳ Heartbeat tick triggered. Result will arrive as a message when the check completes.',
+      );
       // Fire-and-forget — handler returns immediately so grammY can process
       // the next update for this chat (e.g. /heartbeat_status).
-      this.opts.onHeartbeatTick()
+      this.opts
+        .onHeartbeatTick()
         .then(async (result) => {
           if (result.status === 'skipped' || !result.checkId) {
-            await this.sendMessage(chatJid, 'ℹ️ No check due or outside active window.');
+            await this.sendMessage(
+              chatJid,
+              'ℹ️ No check due or outside active window.',
+            );
           } else {
             const emoji =
               result.status === 'ok'
@@ -172,7 +178,9 @@ export class TelegramChannel implements Channel {
             (Date.now() - new Date(state.currentRun.startedAt).getTime()) /
               60_000,
           );
-          lines.push(`\n🔄 Running now: ${state.currentRun.checkName} (${runMin}min)`);
+          lines.push(
+            `\n🔄 Running now: ${state.currentRun.checkName} (${runMin}min)`,
+          );
         }
         lines.push(`Last tick: ${state.lastTick || 'never'}`);
         await ctx.reply(lines.join('\n'));

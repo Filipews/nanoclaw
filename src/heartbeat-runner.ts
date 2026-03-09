@@ -456,7 +456,10 @@ After writing, reply with exactly: "Summary appended to ${dateStr}.md."`;
       await deps
         .sendMessage(jid, `📊 ${result}`)
         .catch((err) =>
-          logger.warn({ err }, 'Heartbeat: failed to send summary confirmation'),
+          logger.warn(
+            { err },
+            'Heartbeat: failed to send summary confirmation',
+          ),
         );
     }
   } catch (err) {
@@ -734,7 +737,10 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   void escalated; // used only for future DB update if needed
 
   // After the last daily_files run of the day, append a summary to Obsidian
-  if (check.id === 'daily-files' && isLastRunOfDay(check, now, HEARTBEAT_TIMEZONE)) {
+  if (
+    check.id === 'daily-files' &&
+    isLastRunOfDay(check, now, HEARTBEAT_TIMEZONE)
+  ) {
     logger.info('Heartbeat: writing end-of-day summary to Obsidian');
     await sendEndOfDaySummary(now, group, jid, deps);
   }
