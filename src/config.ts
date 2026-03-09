@@ -10,6 +10,10 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'AGENT_TIMEZONE',
+  'HEARTBEAT_INTERVAL_MINUTES',
+  'HEARTBEAT_ACTIVE_START',
+  'HEARTBEAT_ACTIVE_END',
+  'HEARTBEAT_TIMEZONE',
 ]);
 
 export const ASSISTANT_NAME =
@@ -75,6 +79,25 @@ export const TIMEZONE =
   envConfig.AGENT_TIMEZONE ||
   process.env.TZ ||
   Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+export const HEARTBEAT_INTERVAL_MINUTES = parseInt(
+  process.env.HEARTBEAT_INTERVAL_MINUTES ||
+    envConfig.HEARTBEAT_INTERVAL_MINUTES ||
+    '15',
+  10,
+);
+export const HEARTBEAT_ACTIVE_START =
+  process.env.HEARTBEAT_ACTIVE_START ||
+  envConfig.HEARTBEAT_ACTIVE_START ||
+  '07:00';
+export const HEARTBEAT_ACTIVE_END =
+  process.env.HEARTBEAT_ACTIVE_END ||
+  envConfig.HEARTBEAT_ACTIVE_END ||
+  '23:00';
+export const HEARTBEAT_TIMEZONE =
+  process.env.HEARTBEAT_TIMEZONE ||
+  envConfig.HEARTBEAT_TIMEZONE ||
+  TIMEZONE;
 
 // Ensure process.env.TZ matches the configured timezone so that
 // naive timestamp strings (no Z suffix) passed to new Date() on the

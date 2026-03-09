@@ -15,6 +15,8 @@ import {
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
+import { getDb } from './db.js';
+import { logInvocation } from './cost-tracker.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -37,8 +39,17 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  checkId?: string; // for heartbeat cost attribution
   assistantName?: string;
   secrets?: Record<string, string>;
+}
+
+export interface ContainerUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  model: string;
 }
 
 export interface ContainerOutput {
@@ -46,6 +57,7 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  usage?: ContainerUsage;
 }
 
 interface VolumeMount {
@@ -418,6 +430,58 @@ function writeObsidianLog(
   }
 }
 
+/**
+ * Read token usage from the SDK JSONL transcript for a given session.
+ * Only counts assistant messages with timestamp >= sinceMs (the container start time).
+ */
+function readTranscriptUsage(
+  groupFolder: string,
+  sessionId: string | undefined,
+  sinceMs: number,
+): ContainerUsage | undefined {
+  if (!sessionId) return undefined;
+  const transcriptPath = path.join(
+    DATA_DIR, 'sessions', groupFolder,
+    '.claude', 'projects', '-workspace-group',
+    `${sessionId}.jsonl`,
+  );
+  if (!fs.existsSync(transcriptPath)) return undefined;
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let model = '';
+  const sinceIso = new Date(sinceMs).toISOString();
+
+  try {
+    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      let entry: Record<string, unknown>;
+      try { entry = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+
+      if (entry.type !== 'assistant') continue;
+      if (typeof entry.timestamp === 'string' && entry.timestamp < sinceIso) continue;
+
+      const msg = entry.message as { usage?: Record<string, number>; model?: string } | undefined;
+      if (msg?.usage) {
+        inputTokens += msg.usage.input_tokens ?? 0;
+        outputTokens += msg.usage.output_tokens ?? 0;
+        cacheReadTokens += msg.usage.cache_read_input_tokens ?? 0;
+        cacheWriteTokens += msg.usage.cache_creation_input_tokens ?? 0;
+      }
+      if (msg?.model && !model) model = msg.model;
+    }
+  } catch (err) {
+    logger.debug({ err, groupFolder, sessionId }, 'Failed to parse transcript for usage');
+    return undefined;
+  }
+
+  if (inputTokens + outputTokens === 0) return undefined;
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, model: model || 'unknown' };
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -491,6 +555,8 @@ export async function runContainerAgent(
     let outputChain = Promise.resolve();
     // Collect agent responses for Obsidian logging
     const streamedResults: string[] = [];
+    // Accumulate token usage across all output markers
+    let accumulatedUsage: ContainerUsage | undefined;
 
     container.stdout.on('data', (data) => {
       const chunk = data.toString();
@@ -530,6 +596,17 @@ export async function runContainerAgent(
             }
             if (parsed.result) {
               streamedResults.push(parsed.result);
+            }
+            if (parsed.usage) {
+              if (!accumulatedUsage) {
+                accumulatedUsage = { ...parsed.usage };
+              } else {
+                accumulatedUsage.inputTokens += parsed.usage.inputTokens;
+                accumulatedUsage.outputTokens += parsed.usage.outputTokens;
+                accumulatedUsage.cacheReadTokens += parsed.usage.cacheReadTokens;
+                accumulatedUsage.cacheWriteTokens += parsed.usage.cacheWriteTokens;
+                if (parsed.usage.model) accumulatedUsage.model = parsed.usage.model;
+              }
             }
             hadStreamingOutput = true;
             // Activity detected — reset the hard timeout
@@ -601,6 +678,35 @@ export async function runContainerAgent(
       timeout = setTimeout(killOnTimeout, timeoutMs);
     };
 
+    const logCost = (duration: number) => {
+      // Primary: parse the SDK JSONL transcript for reliable usage data.
+      // Fallback: use usage emitted by agent runner in ContainerOutput.
+      let usage = readTranscriptUsage(group.folder, newSessionId || input.sessionId, startTime);
+      if (!usage && accumulatedUsage && accumulatedUsage.inputTokens + accumulatedUsage.outputTokens > 0) {
+        usage = accumulatedUsage;
+      }
+      if (!usage) return;
+
+      const source = input.isScheduledTask ? 'scheduled_task' : 'user_message';
+      try {
+        logInvocation(getDb(), {
+          source,
+          checkId: input.checkId,
+          model: usage.model || 'unknown',
+          usage: {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadTokens: usage.cacheReadTokens,
+            cacheWriteTokens: usage.cacheWriteTokens,
+          },
+          durationMs: duration,
+          groupId: group.folder,
+        });
+      } catch (err) {
+        logger.warn({ err }, 'Failed to log invocation cost');
+      }
+    };
+
     container.on('close', (code) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
@@ -630,6 +736,7 @@ export async function runContainerAgent(
             'Container timed out after output (idle cleanup)',
           );
           outputChain.then(() => {
+            logCost(duration);
             writeObsidianLog(
               group,
               input.prompt,
@@ -758,6 +865,7 @@ export async function runContainerAgent(
       // Streaming mode: wait for output chain to settle, return completion marker
       if (onOutput) {
         outputChain.then(() => {
+          logCost(duration);
           logger.info(
             { group: group.name, duration, newSessionId },
             'Container completed (streaming mode)',
@@ -808,6 +916,7 @@ export async function runContainerAgent(
           'Container completed',
         );
 
+        logCost(duration);
         writeObsidianLog(
           group,
           input.prompt,

@@ -4,11 +4,13 @@ import {
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import { HeartbeatTickResult } from '../heartbeat-types.js';
 
 export interface ChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  onHeartbeatTick?: () => Promise<HeartbeatTickResult>; // optional, only used by Telegram
 }
 
 export type ChannelFactory = (opts: ChannelOpts) => Channel | null;

@@ -1,8 +1,19 @@
 import { Bot, InlineKeyboard } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { getDb } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import {
+  formatHeartbeatSummary,
+  formatMonthlySummary,
+  formatTodayDetail,
+  formatWeekSummary,
+  getHeartbeatSummary,
+  getMonthSummary,
+  getTodayDetail,
+  getWeekSummary,
+} from '../cost-tracker.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   ButtonAction,
@@ -11,11 +22,14 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+import { HeartbeatTickResult, HeartbeatState } from '../heartbeat-types.js';
+import { DEFAULT_CHECKS, readHeartbeatState } from '../heartbeat-runner.js';
 
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  onHeartbeatTick?: () => Promise<HeartbeatTickResult>;
 }
 
 export class TelegramChannel implements Channel {
@@ -68,6 +82,78 @@ export class TelegramChannel implements Channel {
           { label: '– Ignore', value: 'email_action:ignore:test@example.com' },
         ],
       );
+    });
+
+    // Cost tracking commands
+    this.bot.command('costs', async (ctx) => {
+      try {
+        const db = getDb();
+        const sub = (ctx.match ?? '').trim().toLowerCase();
+        let text: string;
+        if (sub === 'today') {
+          text = formatTodayDetail(getTodayDetail(db));
+        } else if (sub === 'week') {
+          text = formatWeekSummary(getWeekSummary(db));
+        } else if (sub === 'heartbeat') {
+          text = formatHeartbeatSummary(getHeartbeatSummary(db));
+        } else {
+          text = formatMonthlySummary(getMonthSummary(db));
+        }
+        await ctx.reply(text);
+      } catch (err) {
+        logger.error({ err }, 'Failed to handle /costs command');
+        await ctx.reply('Error fetching cost data.');
+      }
+    });
+
+    // Run one heartbeat tick immediately
+    this.bot.command('heartbeat', async (ctx) => {
+      if (!this.opts.onHeartbeatTick) {
+        await ctx.reply('Heartbeat not configured.');
+        return;
+      }
+      await ctx.reply('Running heartbeat tick...');
+      try {
+        const result = await this.opts.onHeartbeatTick();
+        if (result.status === 'skipped' || !result.checkId) {
+          await ctx.reply('No check due or outside active window.');
+        } else {
+          const emoji =
+            result.status === 'ok'
+              ? '✅'
+              : result.status === 'alert'
+                ? '⚠️'
+                : '❌';
+          await ctx.reply(
+            `${emoji} [${result.checkName}]: ${result.status.toUpperCase()}${result.summary ? '\n' + result.summary : ''}`,
+          );
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to handle /heartbeat command');
+        await ctx.reply('Error running heartbeat tick.');
+      }
+    });
+
+    // Show heartbeat check status (underscore required — Telegram forbids hyphens)
+    this.bot.command('heartbeat_status', async (ctx) => {
+      try {
+        const state: HeartbeatState = readHeartbeatState();
+        const lines = DEFAULT_CHECKS.map((c) => {
+          const cs = state.checks[c.id];
+          if (!cs) return `  ${c.name}: never run`;
+          const ageMin = Math.round(
+            (Date.now() - new Date(cs.lastRun).getTime()) / 60_000,
+          );
+          const icon = cs.lastResult === 'ok' ? '✅' : '⚠️';
+          return `  ${icon} ${c.name}: ${ageMin}min ago${cs.lastSummary ? ' — ' + cs.lastSummary : ''}`;
+        });
+        lines.unshift('Heartbeat status:');
+        lines.push(`\nLast tick: ${state.lastTick || 'never'}`);
+        await ctx.reply(lines.join('\n'));
+      } catch (err) {
+        logger.error({ err }, 'Failed to handle /heartbeat_status command');
+        await ctx.reply('Error fetching heartbeat status.');
+      }
     });
 
     // Handle inline button taps (callback queries)

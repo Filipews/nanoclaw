@@ -50,6 +50,11 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import {
+  startHeartbeatRunner,
+  HeartbeatRunner,
+} from './heartbeat-runner.js';
+import { HeartbeatTickResult } from './heartbeat-types.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -478,6 +483,11 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
+  // Heartbeat runner thunk — set after startHeartbeatRunner runs below.
+  // Channels are constructed before the runner starts, but the closure
+  // captures the variable by reference so the thunk always uses the live value.
+  let heartbeatRunner: HeartbeatRunner | null = null;
+
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
@@ -507,6 +517,13 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    onHeartbeatTick: (): Promise<HeartbeatTickResult> =>
+      heartbeatRunner?.runTick() ??
+      Promise.resolve({
+        checkId: null,
+        checkName: null,
+        status: 'skipped' as const,
+      }),
   };
 
   // Create and connect all registered channels.
@@ -541,6 +558,21 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) {
         logger.warn({ jid }, 'No channel owns JID, cannot send message');
+        return;
+      }
+      const text = formatOutbound(rawText);
+      if (text) await channel.sendMessage(jid, text);
+    },
+  });
+  heartbeatRunner = startHeartbeatRunner({
+    registeredGroups: () => registeredGroups,
+    queue,
+    onProcess: (groupJid, proc, containerName, groupFolder) =>
+      queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    sendMessage: async (jid, rawText) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn({ jid }, 'No channel for heartbeat message');
         return;
       }
       const text = formatOutbound(rawText);

@@ -82,6 +82,23 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS cost_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      source TEXT NOT NULL,
+      check_id TEXT,
+      model TEXT NOT NULL,
+      tokens_input INTEGER NOT NULL DEFAULT 0,
+      tokens_output INTEGER NOT NULL DEFAULT 0,
+      tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+      tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+      cost_usd REAL NOT NULL DEFAULT 0.0,
+      duration_ms INTEGER,
+      group_id TEXT NOT NULL DEFAULT 'personal'
+    );
+    CREATE INDEX IF NOT EXISTS idx_cost_log_timestamp ON cost_log(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_cost_log_source ON cost_log(source);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -632,6 +649,10 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+export function getDb(): Database.Database {
+  return db;
 }
 
 // --- JSON migration ---

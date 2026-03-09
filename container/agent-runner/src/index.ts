@@ -35,6 +35,13 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    model: string;
+  };
 }
 
 interface SessionEntry {
@@ -361,7 +368,7 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; usage: ContainerOutput['usage'] }> {
   const stream = new MessageStream();
   stream.push(prompt);
 
@@ -390,6 +397,11 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheWriteTokens = 0;
+  let modelName = '';
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -461,6 +473,17 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      const msg = message as { message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; model?: string } };
+      const usage = msg.message?.usage;
+      if (usage) {
+        totalInputTokens += usage.input_tokens ?? 0;
+        totalOutputTokens += usage.output_tokens ?? 0;
+        totalCacheReadTokens += usage.cache_read_input_tokens ?? 0;
+        totalCacheWriteTokens += usage.cache_creation_input_tokens ?? 0;
+      }
+      if (msg.message?.model && !modelName) {
+        modelName = msg.message.model;
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
@@ -477,17 +500,42 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      const hasUsage = totalInputTokens > 0 || totalOutputTokens > 0;
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionId
+        newSessionId,
+        usage: hasUsage ? {
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          cacheReadTokens: totalCacheReadTokens,
+          cacheWriteTokens: totalCacheWriteTokens,
+          model: modelName || 'unknown',
+        } : undefined,
       });
+      // Reset for next turn
+      totalInputTokens = 0;
+      totalOutputTokens = 0;
+      totalCacheReadTokens = 0;
+      totalCacheWriteTokens = 0;
     }
   }
 
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  const hasUsage = totalInputTokens > 0 || totalOutputTokens > 0;
+  return {
+    newSessionId,
+    lastAssistantUuid,
+    closedDuringQuery,
+    usage: hasUsage ? {
+      inputTokens: totalInputTokens,
+      outputTokens: totalOutputTokens,
+      cacheReadTokens: totalCacheReadTokens,
+      cacheWriteTokens: totalCacheWriteTokens,
+      model: modelName || 'unknown',
+    } : undefined,
+  };
 }
 
 async function main(): Promise<void> {
