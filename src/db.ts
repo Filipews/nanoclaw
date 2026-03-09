@@ -738,6 +738,49 @@ export interface HeartbeatResultData {
   escalated: boolean;
 }
 
+export interface DailyHeartbeatStats {
+  totalTicks: number;
+  totalAlerts: number;
+  alertsByCheck: Record<string, number>;
+  totalCostUsd: number;
+}
+
+export function getDailyHeartbeatStats(
+  database: Database.Database,
+  date: string, // YYYY-MM-DD
+): DailyHeartbeatStats {
+  const rows = database
+    .prepare(
+      `SELECT check_id, result FROM heartbeat_result_log
+       WHERE date(timestamp) = ?`,
+    )
+    .all(date) as Array<{ check_id: string; result: string }>;
+
+  const totalTicks = rows.length;
+  const totalAlerts = rows.filter((r) => r.result === 'HEARTBEAT_ALERT').length;
+  const alertsByCheck: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.result === 'HEARTBEAT_ALERT') {
+      alertsByCheck[row.check_id] = (alertsByCheck[row.check_id] ?? 0) + 1;
+    }
+  }
+
+  const costRow = database
+    .prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) as total
+       FROM cost_log
+       WHERE source LIKE 'heartbeat_%' AND date(timestamp) = ?`,
+    )
+    .get(date) as { total: number };
+
+  return {
+    totalTicks,
+    totalAlerts,
+    alertsByCheck,
+    totalCostUsd: costRow.total,
+  };
+}
+
 export function logHeartbeatResult(
   database: Database.Database,
   data: HeartbeatResultData,

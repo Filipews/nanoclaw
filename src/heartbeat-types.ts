@@ -11,7 +11,7 @@ export interface HeartbeatCheck {
 
 export interface CheckState {
   lastRun: string;
-  lastResult: 'ok' | 'alert';
+  lastResult: 'ok' | 'alert' | 'error';
   lastSummary?: string;
   consecutiveOks: number;
 }
@@ -19,6 +19,8 @@ export interface CheckState {
 export interface HeartbeatState {
   checks: Record<string, CheckState>;
   lastTick: string;
+  /** Set while a check container is running; cleared once the check completes. */
+  currentRun?: { checkId: string; checkName: string; startedAt: string };
 }
 
 export interface TriageResult {

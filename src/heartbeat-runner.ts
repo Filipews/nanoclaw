@@ -11,7 +11,7 @@ import {
   HEARTBEAT_ESCALATION_MODEL,
 } from './config.js';
 import { ContainerOutput, runContainerAgent } from './container-runner.js';
-import { getDb, logHeartbeatResult } from './db.js';
+import { getDb, getDailyHeartbeatStats, logHeartbeatResult } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -41,6 +41,11 @@ export interface HeartbeatRunner {
 }
 
 const STATE_PATH = path.join(GROUPS_DIR, 'personal', 'heartbeat-state.json');
+
+// When a check errors (e.g. MCP unavailable), retry after this many minutes
+// rather than the full cadence. This prevents a failing check from either
+// monopolising ticks (if never updated) or waiting a full hour to retry.
+const ERROR_BACKOFF_MINUTES = 5;
 
 // Re-export checks so Telegram /heartbeat_status and tests can import from one place
 export { HEARTBEAT_CHECKS as DEFAULT_CHECKS };
@@ -120,7 +125,11 @@ export function pickNextCheck(
     } else {
       const lastRunMs = new Date(cs.lastRun).getTime();
       const minutesSince = (nowMs - lastRunMs) / 60_000;
-      overdueRatio = minutesSince / check.cadence;
+      // Use a short backoff for errored checks so they retry quickly without
+      // monopolising the tick queue; once they recover, full cadence resumes.
+      const effectiveCadence =
+        cs.lastResult === 'error' ? ERROR_BACKOFF_MINUTES : check.cadence;
+      overdueRatio = minutesSince / effectiveCadence;
     }
 
     // Only consider checks that are due (overdueRatio >= 1) or never run
@@ -300,7 +309,8 @@ function buildEscalationPrompt(
   triage: TriageResult,
   useBrowser: boolean,
 ): string {
-  const details = (triage.details?.raw as string | undefined) ?? triage.summary ?? '';
+  const details =
+    (triage.details?.raw as string | undefined) ?? triage.summary ?? '';
   const priority = triage.priority ?? 'unknown';
   const browserHint = useBrowser
     ? '\nYou have browser automation available via the Bash tool (Playwright/Chromium). Use it if needed to complete web-based tasks.'
@@ -323,6 +333,9 @@ function buildEscalationPrompt(
     case 'gmail-inbox':
       taskLine = `Handle the urgent emails. For each: draft a reply, flag for follow-up, or archive as appropriate. Details: ${details || '(see Gmail inbox)'}`;
       break;
+    case 'drive-inbox':
+      taskLine = `New files have arrived in the Drive inbox. Process each file using the drive-filing skill: read /mnt/skills/user/drive-filing/SKILL.md, then classify and file each item in the appropriate Drive folder, log to Obsidian. Files: ${details || '(see Eve/Inbox/ in Google Drive)'}`;
+      break;
     case 'prices':
       taskLine = `A price target has been met. Check the Watch List, verify the current price, and prepare a buy/sell recommendation summary. Details: ${details || '(see watch list)'}`;
       break;
@@ -341,6 +354,115 @@ Use all available tools to complete this task. When done, provide a concise summ
 1. What you found
 2. What action you took
 3. Any follow-up needed`;
+}
+
+/**
+ * Returns true if the next scheduled run of this check would fall outside its
+ * active window — i.e. this is the last run of the day.
+ */
+function isLastRunOfDay(
+  check: HeartbeatCheck,
+  now: Date,
+  timezone: string,
+): boolean {
+  if (!check.activeWindow) return false;
+  const hhmm = getLocalHHMM(now, timezone);
+  const [h, m] = hhmm.split(':').map(Number);
+  const currentMinutes = h * 60 + m;
+  const [endH, endM] = check.activeWindow.end.split(':').map(Number);
+  const endMinutes = endH * 60 + endM;
+  return currentMinutes + check.cadence >= endMinutes;
+}
+
+/**
+ * Spawn a short-lived container that appends the day's heartbeat summary
+ * to today's Obsidian daily log. Called after the last daily_files run.
+ */
+async function sendEndOfDaySummary(
+  now: Date,
+  group: RegisteredGroup,
+  jid: string,
+  deps: HeartbeatDependencies,
+): Promise<void> {
+  const dateStr = now.toISOString().slice(0, 10);
+  let stats: ReturnType<typeof getDailyHeartbeatStats>;
+  try {
+    stats = getDailyHeartbeatStats(getDb(), dateStr);
+  } catch (err) {
+    logger.warn({ err }, 'Heartbeat: failed to get daily stats for summary');
+    return;
+  }
+
+  const alertLines =
+    Object.entries(stats.alertsByCheck)
+      .map(([id, n]) => `  - ${id}: ${n} alert${n !== 1 ? 's' : ''}`)
+      .join('\n') || '  - (none)';
+
+  const summaryBlock = [
+    '## Heartbeat Summary',
+    '',
+    `- ${stats.totalTicks} ticks today, ${stats.totalAlerts} alert${stats.totalAlerts !== 1 ? 's' : ''} surfaced`,
+    `- By check:\n${alertLines}`,
+    `- Estimated cost: $${stats.totalCostUsd.toFixed(4)}`,
+  ].join('\n');
+
+  const prompt = `[HEARTBEAT END-OF-DAY SUMMARY]
+
+Append the following section verbatim to today's daily log at:
+/workspace/obsidian/Eve/Daily/${dateStr}.md
+
+If the file does not exist, create it with just this content. Do NOT modify any existing content.
+
+${summaryBlock}
+
+After writing, reply with exactly: "Summary appended to ${dateStr}.md."`;
+
+  const CLOSE_DELAY_MS = 15_000;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt,
+        sessionId: undefined,
+        groupFolder: group.folder,
+        chatJid: jid,
+        isMain: false,
+        isScheduledTask: true,
+        source: 'heartbeat_summary',
+        modelOverride: HEARTBEAT_TRIAGE_MODEL,
+        maxTurns: 3,
+        assistantName: ASSISTANT_NAME,
+      },
+      (proc, containerName) =>
+        deps.onProcess(jid, proc, containerName, group.folder),
+      async (streamedOutput: ContainerOutput) => {
+        if (streamedOutput.result && !closeTimer) {
+          closeTimer = setTimeout(
+            () => deps.queue.closeStdin(jid),
+            CLOSE_DELAY_MS,
+          );
+        }
+      },
+    );
+    if (closeTimer) clearTimeout(closeTimer);
+    logger.info(
+      { dateStr, stats },
+      'Heartbeat: end-of-day summary written to Obsidian',
+    );
+    const result = output.result || '';
+    if (result) {
+      await deps
+        .sendMessage(jid, `📊 ${result}`)
+        .catch((err) =>
+          logger.warn({ err }, 'Heartbeat: failed to send summary confirmation'),
+        );
+    }
+  } catch (err) {
+    if (closeTimer) clearTimeout(closeTimer);
+    logger.warn({ err }, 'Heartbeat: failed to write end-of-day summary');
+  }
 }
 
 /** Spawn a Sonnet container to perform real work based on triage alert. */
@@ -393,7 +515,9 @@ async function escalateToAgent(
     if (summary) {
       await deps
         .sendMessage(jid, `✅ [${check.name}]\n${summary}`)
-        .catch((err) => logger.warn({ err }, 'Failed to send escalation summary'));
+        .catch((err) =>
+          logger.warn({ err }, 'Failed to send escalation summary'),
+        );
     }
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
@@ -451,7 +575,9 @@ async function escalateToBrowser(
     if (summary) {
       await deps
         .sendMessage(jid, `✅ [${check.name}]\n${summary}`)
-        .catch((err) => logger.warn({ err }, 'Failed to send browser escalation summary'));
+        .catch((err) =>
+          logger.warn({ err }, 'Failed to send browser escalation summary'),
+        );
     }
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
@@ -471,7 +597,8 @@ async function processTriageResult(
   group: RegisteredGroup,
   jid: string,
   deps: HeartbeatDependencies,
-): Promise<boolean> { // returns true if escalated
+): Promise<boolean> {
+  // returns true if escalated
   if (triage.status === 'HEARTBEAT_OK') return false;
 
   const action = triage.actionNeeded ?? 'notify_only';
@@ -491,7 +618,10 @@ async function processTriageResult(
   }
 
   if (action === 'escalate_to_browser') {
-    logger.info({ checkId: check.id }, 'Heartbeat: escalating to browser agent');
+    logger.info(
+      { checkId: check.id },
+      'Heartbeat: escalating to browser agent',
+    );
     await escalateToBrowser(check, triage, group, jid, deps);
     return true;
   }
@@ -533,12 +663,34 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
     'Heartbeat: running check',
   );
 
+  // Write currentRun BEFORE launching the container so /heartbeat_status can
+  // show that something is in progress rather than appearing idle.
+  state.currentRun = {
+    checkId: check.id,
+    checkName: check.name,
+    startedAt: now.toISOString(),
+  };
+  writeState(state);
+
   const { triage, error } = await runSingleCheck(check, group, jid, deps);
 
+  // Clear the in-progress marker
+  state.currentRun = undefined;
   state.lastTick = now.toISOString();
 
   if (error) {
     logger.error({ checkId: check.id, error }, 'Heartbeat check error');
+    // Record the error so pickNextCheck can apply the short ERROR_BACKOFF_MINUTES
+    // cadence instead of retrying immediately (which would monopolise all ticks)
+    // or waiting the full cadence (which would slow recovery once MCP comes back).
+    const prev = state.checks[check.id];
+    state.checks[check.id] = {
+      lastRun: now.toISOString(),
+      lastResult: 'error',
+      lastSummary: error.slice(0, 200),
+      consecutiveOks: 0,
+    };
+    void prev;
     writeState(state);
     return {
       checkId: check.id,
@@ -577,7 +729,17 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   if (isAlert && triage) {
     logger.info({ checkId: check.id, summary }, 'Heartbeat ALERT');
     escalated = await processTriageResult(check, triage, group, jid, deps);
+  }
 
+  void escalated; // used only for future DB update if needed
+
+  // After the last daily_files run of the day, append a summary to Obsidian
+  if (check.id === 'daily-files' && isLastRunOfDay(check, now, HEARTBEAT_TIMEZONE)) {
+    logger.info('Heartbeat: writing end-of-day summary to Obsidian');
+    await sendEndOfDaySummary(now, group, jid, deps);
+  }
+
+  if (isAlert) {
     return {
       checkId: check.id,
       checkName: check.name,
@@ -586,7 +748,6 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
     };
   }
 
-  void escalated; // used only for future DB update if needed
   logger.info({ checkId: check.id }, 'Heartbeat OK');
   return { checkId: check.id, checkName: check.name, status: 'ok', summary };
 }

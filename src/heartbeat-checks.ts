@@ -128,6 +128,28 @@ Are there overdue or urgent tasks requiring attention?
 ${TRIAGE_FOOTER}`,
   },
   {
+    id: 'drive-inbox',
+    name: 'Drive Inbox',
+    cadence: 60,
+    activeWindow: { start: '09:00', end: '18:00' },
+    priority: 6,
+    enabled: true,
+    escalationTrigger: 'new files in Drive inbox',
+    prompt: `[HEARTBEAT CHECK: Drive Inbox]
+
+Use the Google MCP (mcp__google__*) to check Google Drive.
+
+Steps:
+1. List files in the Eve/Inbox/ folder on Google Drive.
+2. Identify files added or modified in the last 2 hours (or since the last check if known).
+3. Exclude files with names ending in "_filed", "_processed", or already in a subfolder.
+4. List the new files: name, type, and when they were added.
+5. If no new unprocessed files are found, respond with HEARTBEAT_OK.
+
+If new files are present, respond with HEARTBEAT_ALERT and list each filename in the summary.
+${TRIAGE_FOOTER}`,
+  },
+  {
     id: 'prices',
     name: 'Prices',
     cadence: 1440,

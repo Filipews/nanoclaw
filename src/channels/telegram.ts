@@ -106,32 +106,40 @@ export class TelegramChannel implements Channel {
       }
     });
 
-    // Run one heartbeat tick immediately
+    // Run one heartbeat tick immediately.
+    // The tick can take 10–30 min (container runtime), so we fire it in the
+    // background and reply immediately. grammY processes updates sequentially
+    // per chat — awaiting a long container here would block all subsequent
+    // commands (/heartbeat_status etc.) until the container finishes.
     this.bot.command('heartbeat', async (ctx) => {
       if (!this.opts.onHeartbeatTick) {
         await ctx.reply('Heartbeat not configured.');
         return;
       }
-      await ctx.reply('Running heartbeat tick...');
-      try {
-        const result = await this.opts.onHeartbeatTick();
-        if (result.status === 'skipped' || !result.checkId) {
-          await ctx.reply('No check due or outside active window.');
-        } else {
-          const emoji =
-            result.status === 'ok'
-              ? '✅'
-              : result.status === 'alert'
-                ? '⚠️'
-                : '❌';
-          await ctx.reply(
-            `${emoji} [${result.checkName}]: ${result.status.toUpperCase()}${result.summary ? '\n' + result.summary : ''}`,
-          );
-        }
-      } catch (err) {
-        logger.error({ err }, 'Failed to handle /heartbeat command');
-        await ctx.reply('Error running heartbeat tick.');
-      }
+      const chatJid = `tg:${ctx.chat.id}`;
+      await ctx.reply('⏳ Heartbeat tick triggered. Result will arrive as a message when the check completes.');
+      // Fire-and-forget — handler returns immediately so grammY can process
+      // the next update for this chat (e.g. /heartbeat_status).
+      this.opts.onHeartbeatTick()
+        .then(async (result) => {
+          if (result.status === 'skipped' || !result.checkId) {
+            await this.sendMessage(chatJid, 'ℹ️ No check due or outside active window.');
+          } else {
+            const emoji =
+              result.status === 'ok'
+                ? '✅'
+                : result.status === 'alert'
+                  ? '⚠️'
+                  : '❌';
+            await this.sendMessage(
+              chatJid,
+              `${emoji} [${result.checkName}]: ${result.status.toUpperCase()}${result.summary ? '\n' + result.summary : ''}`,
+            );
+          }
+        })
+        .catch((err) =>
+          logger.error({ err }, 'Failed to run background heartbeat tick'),
+        );
     });
 
     // Show heartbeat check status (underscore required — Telegram forbids hyphens)
@@ -144,11 +152,29 @@ export class TelegramChannel implements Channel {
           const ageMin = Math.round(
             (Date.now() - new Date(cs.lastRun).getTime()) / 60_000,
           );
-          const icon = cs.lastResult === 'ok' ? '✅' : '⚠️';
-          return `  ${icon} ${c.name}: ${ageMin}min ago${cs.lastSummary ? ' — ' + cs.lastSummary : ''}`;
+          const icon =
+            cs.lastResult === 'ok'
+              ? '✅'
+              : cs.lastResult === 'error'
+                ? '❌'
+                : '⚠️';
+          const suffix =
+            cs.lastResult === 'error'
+              ? ` — ERROR: ${cs.lastSummary ?? 'unknown'}`
+              : cs.lastSummary
+                ? ` — ${cs.lastSummary}`
+                : '';
+          return `  ${icon} ${c.name}: ${ageMin}min ago${suffix}`;
         });
         lines.unshift('Heartbeat status:');
-        lines.push(`\nLast tick: ${state.lastTick || 'never'}`);
+        if (state.currentRun) {
+          const runMin = Math.round(
+            (Date.now() - new Date(state.currentRun.startedAt).getTime()) /
+              60_000,
+          );
+          lines.push(`\n🔄 Running now: ${state.currentRun.checkName} (${runMin}min)`);
+        }
+        lines.push(`Last tick: ${state.lastTick || 'never'}`);
         await ctx.reply(lines.join('\n'));
       } catch (err) {
         logger.error({ err }, 'Failed to handle /heartbeat_status command');
