@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TIMEZONE,
@@ -464,7 +465,57 @@ function ensureContainerSystemRunning(): void {
   cleanupOrphans();
 }
 
+/**
+ * Acquire a PID-based exclusive lock to prevent multiple NanoClaw instances.
+ * Returns a cleanup function to release the lock on shutdown.
+ */
+function acquirePidLock(): () => void {
+  const pidFile = path.join(DATA_DIR, 'nanoclaw.pid');
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+
+  // Check for stale PID file from a previous crash
+  if (fs.existsSync(pidFile)) {
+    try {
+      const existingPid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      if (existingPid && !isNaN(existingPid)) {
+        try {
+          // signal 0 tests if process exists without killing it
+          process.kill(existingPid, 0);
+          // Process is still alive — refuse to start
+          logger.fatal(
+            { existingPid, currentPid: process.pid },
+            'Another NanoClaw instance is already running. Kill it first or remove %s',
+            pidFile,
+          );
+          process.exit(1);
+        } catch {
+          // Process doesn't exist — stale PID file, safe to overwrite
+          logger.warn({ stalePid: existingPid }, 'Removing stale PID file');
+        }
+      }
+    } catch {
+      // Malformed PID file — overwrite it
+    }
+  }
+
+  fs.writeFileSync(pidFile, String(process.pid) + '\n');
+  logger.info({ pid: process.pid }, 'PID lock acquired');
+
+  return () => {
+    try {
+      // Only remove if it still contains our PID (avoid removing another instance's lock)
+      const content = fs.readFileSync(pidFile, 'utf-8').trim();
+      if (content === String(process.pid)) {
+        fs.unlinkSync(pidFile);
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+  };
+}
+
 async function main(): Promise<void> {
+  const releasePidLock = acquirePidLock();
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
@@ -475,6 +526,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+    releasePidLock();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
