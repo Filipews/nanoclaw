@@ -319,7 +319,7 @@ function buildEscalationPrompt(
   let taskLine: string;
   switch (check.id) {
     case 'needs-reply':
-      taskLine = `Draft and send replies for the email threads that have waited >24h. Threads: ${details || '(see Gmail inbox)'}`;
+      taskLine = `Draft replies for the email threads that have waited >24h. Threads: ${details || '(see Gmail inbox)'}`;
       break;
     case 'tasks':
       taskLine = `Review and update the status of overdue tasks. For each: mark complete if done, reschedule if needed, or note why it is blocked. Tasks: ${details || '(see Tasks/inbox.md)'}`;
@@ -409,7 +409,7 @@ async function sendEndOfDaySummary(
   const prompt = `[HEARTBEAT END-OF-DAY SUMMARY]
 
 Append the following section verbatim to today's daily log at:
-/workspace/obsidian/Eve/Daily/${dateStr}.md
+/workspace/obsidian/Daily/${dateStr}.md
 
 If the file does not exist, create it with just this content. Do NOT modify any existing content.
 

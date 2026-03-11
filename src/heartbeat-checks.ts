@@ -37,7 +37,7 @@ export const HEARTBEAT_CHECKS: HeartbeatCheck[] = [
     id: 'gmail-inbox',
     name: 'Gmail Inbox',
     cadence: 30,
-    activeWindow: { start: '08:00', end: '20:00' },
+    activeWindow: { start: '08:00', end: '22:00' },
     priority: 10,
     enabled: true,
     escalationTrigger: 'urgent email found',
@@ -58,7 +58,7 @@ ${TRIAGE_FOOTER}`,
     id: 'calendar',
     name: 'Calendar',
     cadence: 60,
-    activeWindow: { start: '07:00', end: '22:00' },
+    activeWindow: { start: '07:00', end: '23:00' },
     priority: 9,
     enabled: true,
     escalationTrigger: 'event conflict or imminent event',
@@ -84,7 +84,7 @@ ${TRIAGE_FOOTER}`,
     id: 'needs-reply',
     name: 'Needs Reply',
     cadence: 240,
-    activeWindow: { start: '10:00', end: '19:00' },
+    activeWindow: { start: '8:00', end: '23:00' },
     priority: 8,
     enabled: true,
     escalationTrigger: 'reply overdue > 24h',
@@ -105,7 +105,7 @@ ${TRIAGE_FOOTER}`,
     id: 'tasks',
     name: 'Tasks',
     cadence: 60,
-    activeWindow: { start: '08:00', end: '21:00' },
+    activeWindow: { start: '08:00', end: '22:00' },
     priority: 7,
     enabled: true,
     escalationTrigger: 'overdue task found',
@@ -114,8 +114,8 @@ ${TRIAGE_FOOTER}`,
 Check task files for overdue or urgent items.
 
 Steps:
-1. Read /workspace/obsidian/Eve/Tasks/inbox.md if it exists.
-2. Read any other task files in /workspace/obsidian/Eve/Tasks/ directory.
+1. Read /workspace/obsidian/Tasks/inbox.md if it exists.
+2. Read any other task files in /workspace/obsidian/Tasks/ directory.
 3. Look for tasks with:
    - Past due dates (format: YYYY-MM-DD before today)
    - "urgent" or "ASAP" labels
@@ -131,7 +131,7 @@ ${TRIAGE_FOOTER}`,
     id: 'drive-inbox',
     name: 'Drive Inbox',
     cadence: 60,
-    activeWindow: { start: '09:00', end: '18:00' },
+    activeWindow: { start: '08:00', end: '23:00' },
     priority: 6,
     enabled: true,
     escalationTrigger: 'new files in Drive inbox',
@@ -153,7 +153,7 @@ ${TRIAGE_FOOTER}`,
     id: 'prices',
     name: 'Prices',
     cadence: 1440,
-    activeWindow: { start: '07:00', end: '10:00' },
+    activeWindow: { start: '07:00', end: '23:00' },
     priority: 3,
     enabled: true,
     escalationTrigger: 'price target met',
@@ -176,7 +176,7 @@ ${TRIAGE_FOOTER}`,
     id: 'daily-files',
     name: 'Daily Files',
     cadence: 480,
-    activeWindow: { start: '08:00', end: '22:00' },
+    activeWindow: { start: '08:00', end: '23:00' },
     priority: 2,
     enabled: true,
     escalationTrigger: 'new unprocessed file or missing daily log',
@@ -186,9 +186,9 @@ Verify today's daily log and ledger exist, and check for pending inbox items.
 
 Steps:
 1. Today's date: ${new Date().toISOString().slice(0, 10)}.
-2. Check if /workspace/obsidian/Eve/Daily/${new Date().toISOString().slice(0, 10)}.md exists.
+2. Check if /workspace/obsidian/Daily/${new Date().toISOString().slice(0, 10)}.md exists.
 3. Check if /workspace/obsidian/Ledger/${new Date().toISOString().slice(0, 10)}.md exists.
-4. Scan /workspace/obsidian/Eve/Inbox/ for files that have not been processed (no processed/done tag).
+4. Scan /workspace/obsidian/Inbox/ for files that have not been processed (no processed/done tag).
 5. Check if any pending items from yesterday's daily note need to be carried forward.
 
 Are today's logs missing or are there unprocessed inbox files?
@@ -207,10 +207,10 @@ ${TRIAGE_FOOTER}`,
 Perform a weekly health check of the Obsidian vault.
 
 Steps:
-1. Count open tasks across all task files in /workspace/obsidian/Eve/Tasks/ — report total.
+1. Count open tasks across all task files in /workspace/obsidian/Tasks/ — report total.
 2. Check skill CSV files in /home/node/.claude/skills/ — find any files not modified in over 30 days.
 3. Verify /workspace/obsidian/MEMORY.md exists and was updated this week.
-4. Check /workspace/obsidian/Eve/Weekly/ — does this week's summary file exist?
+4. Check /workspace/obsidian/Weekly/ — does this week's summary file exist?
 5. Look for any broken internal links or missing referenced files (spot check 5 random notes).
 6. Report a summary of findings.
 
