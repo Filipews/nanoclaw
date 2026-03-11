@@ -16,10 +16,55 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/router.ts` | Message formatting and outbound routing |
 | `src/config.ts` | Trigger pattern, paths, intervals |
 | `src/container-runner.ts` | Spawns agent containers with mounts |
+| `src/container-runtime.ts` | Docker abstraction: mount args, stop, orphan cleanup |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
 | `src/db.ts` | SQLite operations |
+| `src/cost-tracker.ts` | Tracks API costs per invocation (tokens, model, source, group) |
+| `src/heartbeat-runner.ts` | Heartbeat orchestration: tick loop, triage, escalation routing |
+| `src/heartbeat-checks.ts` | 7 built-in checks (Gmail, Calendar, Tasks, Drive, Prices, etc.) |
+| `src/heartbeat-types.ts` | Types: HeartbeatCheck, CheckState, TriageResult, HeartbeatTickResult |
+| `src/group-queue.ts` | Per-group task queue with global concurrency limit and backoff |
+| `src/group-folder.ts` | Group folder path validation (safe names, no traversal) |
+| `src/logger.ts` | Pino-based structured logger with color output in dev |
+| `src/mount-security.ts` | Validates container mounts against allowlist (tamper-proof) |
+| `src/sender-allowlist.ts` | Per-chat sender authorization (trigger/drop modes) |
+| `src/timezone.ts` | UTC → local time formatting via Intl API |
+| `src/env.ts` | Reads .env keys without polluting process.env |
+| `src/types.ts` | Central types: Channel, RegisteredGroup, NewMessage, ScheduledTask, AdditionalMount |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
+| `container/agent-runner/src/index.ts` | Container main process: stdin input + IPC polling for follow-up messages |
+
+## Heartbeat System
+
+Runs periodic proactive checks on a rotation algorithm (overdue ratio × priority scoring). Each check has a cadence (minutes), active time window, and escalation routing:
+
+- **`notify_only`**: Send alert to Telegram
+- **`escalate_to_agent`**: Spawn Sonnet container with full task context
+- **`escalate_to_browser`**: Same as agent with browser automation hint
+
+Triage uses Haiku (cheap); escalation uses Sonnet. State persisted at `groups/personal/heartbeat-state.json`. Failing checks back off 5 minutes instead of full cadence. End-of-day summary appended to Obsidian daily log.
+
+Built-in checks: Gmail Inbox (30min, 8am-8pm), Calendar (60min, 7am-10pm), Needs Reply (240min), Tasks, Daily Files, Drive Inbox, Prices.
+
+## Security Model
+
+- **Mount allowlist**: `~/.config/nanoclaw/mount-allowlist.json` — stored outside project to prevent agent tampering. Blocks `.ssh`, `.gnupg`, `.aws`, credential files by default. Container paths must be under `/workspace/` or `/mnt/`.
+- **Sender allowlist**: `~/.config/nanoclaw/sender-allowlist.json` — per-chat authorization. Modes: `trigger` (only listed senders activate agent) or `drop` (unlisted silently dropped). Supports per-chat overrides and `*` wildcard.
+
+## Cost Tracking
+
+`cost-tracker.ts` logs every Claude invocation to the `cost_log` SQLite table (input/output/cache tokens, model, source, duration, group_id). Query helpers: `getMonthSummary()`, `getTodayDetail()`, `getWeekSummary()`, `getHeartbeatSummary()`. Telegram-formatted output with visual progress bars.
+
+## Group Queue
+
+`group-queue.ts` enforces `MAX_CONCURRENT_CONTAINERS` globally with per-group queuing. Tasks are prioritized over messages in drain order. Exponential backoff on failure (5s base, max 5 retries). Graceful shutdown detaches containers rather than killing them (preserves WhatsApp connections). Task deduplication prevents double-queueing.
+
+## IPC Protocol
+
+- **Initial**: stdin JSON (full config + message)
+- **Follow-up**: File-based IPC with stdin close sentinel
+- Enables multi-turn conversations within a single container session
 
 ## Skills
 
