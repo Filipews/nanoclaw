@@ -30,14 +30,13 @@ const MODEL_RATES: Record<string, ModelRate> = {
   },
 };
 
-const DEFAULT_RATE = MODEL_RATES['claude-sonnet-4-5-20250929'];
+const DEFAULT_RATE = MODEL_RATES['claude-sonnet-4-6'];
 
 function getRate(model: string): ModelRate {
   if (MODEL_RATES[model]) return MODEL_RATES[model];
   if (model.includes('haiku')) return MODEL_RATES['claude-haiku-4-5-20251001'];
   if (model.includes('opus')) return MODEL_RATES['claude-opus-4-6'];
-  if (model.includes('sonnet'))
-    return MODEL_RATES['claude-sonnet-4-5-20250929'];
+  if (model.includes('sonnet')) return MODEL_RATES['claude-sonnet-4-6'];
   return DEFAULT_RATE;
 }
 
