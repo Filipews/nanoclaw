@@ -433,7 +433,7 @@ async function runQuery(
   const effectiveModel =
     modelOverride ??
     process.env.DEFAULT_MODEL ??
-    'claude-sonnet-4-5-20250929';
+    'claude-sonnet-4-6';
 
   for await (const message of query({
     prompt: stream,
@@ -455,7 +455,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__google__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -471,6 +472,9 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        // Google Workspace MCP server running on the host (safe-google-mcp).
+        // Credentials stay on the host; the agent sees only tools via HTTP.
+        google: { type: 'http', url: 'http://host.docker.internal:3100' },
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],

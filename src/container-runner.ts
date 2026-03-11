@@ -161,12 +161,10 @@ function buildVolumeMounts(
       // keep defaults if file is malformed
     }
   }
-  // Always ensure the Google Workspace MCP server is registered.
-  // Credentials stay on the host — the agent sees only tools via HTTP.
-  settings.mcpServers = {
-    ...(settings.mcpServers as Record<string, unknown> | undefined),
-    google: { url: 'http://host.docker.internal:3100/sse' },
-  };
+  // Remove legacy google MCP entry if present (now configured in agent-runner mcpServers).
+  if (settings.mcpServers && typeof settings.mcpServers === 'object') {
+    delete (settings.mcpServers as Record<string, unknown>).google;
+  }
   fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
 
   // Sync skills from container/skills/ into each group's .claude/skills/
