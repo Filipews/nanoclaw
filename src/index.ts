@@ -476,7 +476,10 @@ function acquirePidLock(): () => void {
   // Check for stale PID file from a previous crash
   if (fs.existsSync(pidFile)) {
     try {
-      const existingPid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      const existingPid = parseInt(
+        fs.readFileSync(pidFile, 'utf-8').trim(),
+        10,
+      );
       if (existingPid && !isNaN(existingPid)) {
         try {
           // signal 0 tests if process exists without killing it
