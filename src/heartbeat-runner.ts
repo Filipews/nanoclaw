@@ -4,7 +4,9 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   GROUPS_DIR,
+  HEARTBEAT_CHECKS_DIR,
   HEARTBEAT_INTERVAL_MINUTES,
   HEARTBEAT_TIMEZONE,
   HEARTBEAT_TRIAGE_MODEL,
@@ -22,7 +24,7 @@ import {
   HeartbeatTickResult,
   TriageResult,
 } from './heartbeat-types.js';
-import { HEARTBEAT_CHECKS } from './heartbeat-checks.js';
+import { loadHeartbeatChecks } from './heartbeat-loader.js';
 
 export interface HeartbeatDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -48,7 +50,9 @@ const STATE_PATH = path.join(GROUPS_DIR, 'personal', 'heartbeat-state.json');
 const ERROR_BACKOFF_MINUTES = 5;
 
 // Re-export checks so Telegram /heartbeat_status and tests can import from one place
-export { HEARTBEAT_CHECKS as DEFAULT_CHECKS };
+export function getHeartbeatChecks(): HeartbeatCheck[] {
+  return loadHeartbeatChecks(HEARTBEAT_CHECKS_DIR);
+}
 
 function readState(): HeartbeatState {
   try {
@@ -260,7 +264,15 @@ async function runSingleCheck(
 
   const scheduleClose = () => {
     if (closeTimer) return;
-    closeTimer = setTimeout(() => deps.queue.closeStdin(jid), CLOSE_DELAY_MS);
+    closeTimer = setTimeout(() => {
+      const inputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+      try {
+        fs.mkdirSync(inputDir, { recursive: true });
+        fs.writeFileSync(path.join(inputDir, '_close'), '');
+      } catch (err) {
+        logger.warn({ err, checkId: check.id }, 'Heartbeat: failed to write close sentinel');
+      }
+    }, CLOSE_DELAY_MS);
   };
 
   try {
@@ -316,39 +328,17 @@ function buildEscalationPrompt(
     ? '\nYou have browser automation available via the Bash tool (Playwright/Chromium). Use it if needed to complete web-based tasks.'
     : '';
 
-  let taskLine: string;
-  switch (check.id) {
-    case 'needs-reply':
-      taskLine = `Draft replies for the email threads that have waited >24h. Threads: ${details || '(see Gmail inbox)'}`;
-      break;
-    case 'tasks':
-      taskLine = `Review and update the status of overdue tasks. For each: mark complete if done, reschedule if needed, or note why it is blocked. Tasks: ${details || '(see Tasks/inbox.md)'}`;
-      break;
-    case 'daily-files':
-      taskLine = `Process the new files from the inbox. For each file: read it, file it in the appropriate Obsidian folder, and create a task if action is needed. Files: ${details || '(see Eve/Inbox/)'}`;
-      break;
-    case 'calendar':
-      taskLine = `Prepare for the upcoming event or trip. Generate a packing list or preparation checklist if applicable. Details: ${details || '(see calendar)'}`;
-      break;
-    case 'gmail-inbox':
-      taskLine = `Handle the urgent emails. For each: draft a reply, flag for follow-up, or archive as appropriate. Details: ${details || '(see Gmail inbox)'}`;
-      break;
-    case 'drive-inbox':
-      taskLine = `New files have arrived in the Drive inbox. Process each file using the drive-filing skill: read /mnt/skills/user/drive-filing/SKILL.md, then classify and file each item in the appropriate Drive folder, log to Obsidian. Files: ${details || '(see Eve/Inbox/ in Google Drive)'}`;
-      break;
-    case 'prices':
-      taskLine = `A price target has been met. Check the Watch List, verify the current price, and prepare a buy/sell recommendation summary. Details: ${details || '(see watch list)'}`;
-      break;
-    default:
-      taskLine = `Investigate and resolve the issue described in the triage summary. Details: ${details || '(no details)'}`;
-  }
+  // Use the check's escalation prompt if available; fall back to a generic task line
+  const rawEscalation = check.escalationPrompt
+    ? check.escalationPrompt.replace(/\{\{details\}\}/g, details || `(see ${check.name})`)
+    : `Investigate and resolve the issue described in the triage summary. Details: ${details || '(no details)'}`;
 
   return `[HEARTBEAT ESCALATION: ${check.name}]
 Priority: ${priority}
 Triage summary: ${triage.summary || 'No summary provided.'}
 ${browserHint}
 
-Your task: ${taskLine}
+Your task: ${rawEscalation}
 
 Use all available tools to complete this task. When done, provide a concise summary of:
 1. What you found
@@ -439,10 +429,15 @@ After writing, reply with exactly: "Summary appended to ${dateStr}.md."`;
         deps.onProcess(jid, proc, containerName, group.folder),
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result && !closeTimer) {
-          closeTimer = setTimeout(
-            () => deps.queue.closeStdin(jid),
-            CLOSE_DELAY_MS,
-          );
+          closeTimer = setTimeout(() => {
+            const inputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+            try {
+              fs.mkdirSync(inputDir, { recursive: true });
+              fs.writeFileSync(path.join(inputDir, '_close'), '');
+            } catch (err) {
+              logger.warn({ err }, 'Heartbeat: failed to write close sentinel');
+            }
+          }, CLOSE_DELAY_MS);
         }
       },
     );
@@ -504,10 +499,15 @@ async function escalateToAgent(
         if (streamedOutput.result) {
           resultText = streamedOutput.result;
           if (!closeTimer) {
-            closeTimer = setTimeout(
-              () => deps.queue.closeStdin(jid),
-              CLOSE_DELAY_MS,
-            );
+            closeTimer = setTimeout(() => {
+              const inputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+              try {
+                fs.mkdirSync(inputDir, { recursive: true });
+                fs.writeFileSync(path.join(inputDir, '_close'), '');
+              } catch (err) {
+                logger.warn({ err, checkId: check.id }, 'Heartbeat: failed to write close sentinel');
+              }
+            }, CLOSE_DELAY_MS);
           }
         }
       },
@@ -564,10 +564,15 @@ async function escalateToBrowser(
         if (streamedOutput.result) {
           resultText = streamedOutput.result;
           if (!closeTimer) {
-            closeTimer = setTimeout(
-              () => deps.queue.closeStdin(jid),
-              CLOSE_DELAY_MS,
-            );
+            closeTimer = setTimeout(() => {
+              const inputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+              try {
+                fs.mkdirSync(inputDir, { recursive: true });
+                fs.writeFileSync(path.join(inputDir, '_close'), '');
+              } catch (err) {
+                logger.warn({ err, checkId: check.id }, 'Heartbeat: failed to write close sentinel');
+              }
+            }, CLOSE_DELAY_MS);
           }
         }
       },
@@ -652,7 +657,8 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   const now = new Date();
   const state = readState();
 
-  const check = pickNextCheck(HEARTBEAT_CHECKS, state, now, HEARTBEAT_TIMEZONE);
+  const checks = loadHeartbeatChecks(HEARTBEAT_CHECKS_DIR);
+  const check = pickNextCheck(checks, state, now, HEARTBEAT_TIMEZONE);
 
   if (!check) {
     logger.debug('Heartbeat: no check due this tick');

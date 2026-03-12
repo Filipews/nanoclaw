@@ -7,6 +7,8 @@ export interface HeartbeatCheck {
   prompt: string;
   escalationTrigger: string;
   enabled: boolean;
+  /** Optional escalation prompt body; `{{details}}` is replaced at escalation time. */
+  escalationPrompt?: string;
 }
 
 export interface CheckState {

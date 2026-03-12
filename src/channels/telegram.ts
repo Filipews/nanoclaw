@@ -23,7 +23,7 @@ import {
   RegisteredGroup,
 } from '../types.js';
 import { HeartbeatTickResult, HeartbeatState } from '../heartbeat-types.js';
-import { DEFAULT_CHECKS, readHeartbeatState } from '../heartbeat-runner.js';
+import { getHeartbeatChecks, readHeartbeatState } from '../heartbeat-runner.js';
 
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
@@ -152,7 +152,7 @@ export class TelegramChannel implements Channel {
     this.bot.command('heartbeat_status', async (ctx) => {
       try {
         const state: HeartbeatState = readHeartbeatState();
-        const lines = DEFAULT_CHECKS.map((c) => {
+        const lines = getHeartbeatChecks().map((c) => {
           const cs = state.checks[c.id];
           if (!cs) return `  ${c.name}: never run`;
           const ageMin = Math.round(

@@ -21,7 +21,7 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/db.ts` | SQLite operations |
 | `src/cost-tracker.ts` | Tracks API costs per invocation (tokens, model, source, group) |
 | `src/heartbeat-runner.ts` | Heartbeat orchestration: tick loop, triage, escalation routing |
-| `src/heartbeat-checks.ts` | 7 built-in checks (Gmail, Calendar, Tasks, Drive, Prices, etc.) |
+| `src/heartbeat-loader.ts` | Loads check definitions from `groups/personal/heartbeat-checks/*.md` each tick |
 | `src/heartbeat-types.ts` | Types: HeartbeatCheck, CheckState, TriageResult, HeartbeatTickResult |
 | `src/group-queue.ts` | Per-group task queue with global concurrency limit and backoff |
 | `src/group-folder.ts` | Group folder path validation (safe names, no traversal) |
@@ -45,7 +45,7 @@ Runs periodic proactive checks on a rotation algorithm (overdue ratio × priorit
 
 Triage uses Haiku (cheap); escalation uses Sonnet. State persisted at `groups/personal/heartbeat-state.json`. Failing checks back off 5 minutes instead of full cadence. End-of-day summary appended to Obsidian daily log.
 
-Built-in checks: Gmail Inbox (30min, 8am-8pm), Calendar (60min, 7am-10pm), Needs Reply (240min), Tasks, Daily Files, Drive Inbox, Prices.
+Check definitions live in `groups/personal/heartbeat-checks/*.md` (8 files: gmail-inbox, calendar, needs-reply, tasks, drive-inbox, prices, daily-files, vault-health). Edits to these files take effect on the next tick — no rebuild needed.
 
 ## Security Model
 
