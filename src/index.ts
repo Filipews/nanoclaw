@@ -267,7 +267,34 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  let sessionId: string | undefined = sessions[group.folder];
+
+  // Rotate session if JSONL file exceeds 5MB
+  if (sessionId) {
+    const sessionFile = path.join(
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      '.claude',
+      'projects',
+      '-workspace-group',
+      `${sessionId}.jsonl`,
+    );
+    try {
+      const stat = fs.statSync(sessionFile);
+      if (stat.size > 5 * 1024 * 1024) {
+        logger.warn(
+          { group: group.name, sessionId, sizeBytes: stat.size },
+          'Session JSONL exceeds 5MB, rotating',
+        );
+        delete sessions[group.folder];
+        setSession(group.folder, '');
+        sessionId = undefined;
+      }
+    } catch {
+      // File doesn't exist yet or can't be read — proceed with current session
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
