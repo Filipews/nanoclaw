@@ -39,9 +39,7 @@ interface CheckFrontmatter {
   escalationTrigger?: unknown;
 }
 
-function parseWindow(
-  raw: unknown,
-): { start: string; end: string } | undefined {
+function parseWindow(raw: unknown): { start: string; end: string } | undefined {
   if (typeof raw !== 'string') return undefined;
   const match = raw.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
   if (!match) return undefined;
@@ -106,7 +104,10 @@ function parseCheckFile(
   // Split frontmatter from body
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!fmMatch) {
-    logger.warn({ filePath }, 'Heartbeat check file missing YAML frontmatter, skipping');
+    logger.warn(
+      { filePath },
+      'Heartbeat check file missing YAML frontmatter, skipping',
+    );
     return null;
   }
 
@@ -114,7 +115,10 @@ function parseCheckFile(
   try {
     fm = yaml.parse(fmMatch[1]) as CheckFrontmatter;
   } catch (err) {
-    logger.warn({ filePath, err }, 'Heartbeat check file has invalid YAML frontmatter, skipping');
+    logger.warn(
+      { filePath, err },
+      'Heartbeat check file has invalid YAML frontmatter, skipping',
+    );
     return null;
   }
 
@@ -132,7 +136,10 @@ function parseCheckFile(
   const activeWindow = parseWindow(fm.window);
 
   if (cadence === undefined) {
-    logger.warn({ filePath }, 'Heartbeat check missing required `cadence` field, skipping');
+    logger.warn(
+      { filePath },
+      'Heartbeat check missing required `cadence` field, skipping',
+    );
     return null;
   }
 
@@ -145,9 +152,8 @@ function parseCheckFile(
   const prompt = `[HEARTBEAT CHECK: ${name}]\n\n${triageBody}${TRIAGE_FOOTER}`;
 
   // Escalation prompt keeps {{details}} as-is (replaced at escalation time)
-  const escalationPrompt = escalationBody !== undefined
-    ? replaceToday(escalationBody)
-    : undefined;
+  const escalationPrompt =
+    escalationBody !== undefined ? replaceToday(escalationBody) : undefined;
 
   return {
     id,
@@ -170,7 +176,10 @@ function parseCheckFile(
  */
 export function loadHeartbeatChecks(dir: string): HeartbeatCheck[] {
   if (!fs.existsSync(dir)) {
-    logger.warn({ dir }, 'Heartbeat checks directory not found, returning empty list');
+    logger.warn(
+      { dir },
+      'Heartbeat checks directory not found, returning empty list',
+    );
     return [];
   }
 
@@ -192,7 +201,10 @@ export function loadHeartbeatChecks(dir: string): HeartbeatCheck[] {
     try {
       content = fs.readFileSync(filePath, 'utf-8');
     } catch (err) {
-      logger.warn({ filePath, err }, 'Failed to read heartbeat check file, skipping');
+      logger.warn(
+        { filePath, err },
+        'Failed to read heartbeat check file, skipping',
+      );
       continue;
     }
 

@@ -270,7 +270,10 @@ async function runSingleCheck(
         fs.mkdirSync(inputDir, { recursive: true });
         fs.writeFileSync(path.join(inputDir, '_close'), '');
       } catch (err) {
-        logger.warn({ err, checkId: check.id }, 'Heartbeat: failed to write close sentinel');
+        logger.warn(
+          { err, checkId: check.id },
+          'Heartbeat: failed to write close sentinel',
+        );
       }
     }, CLOSE_DELAY_MS);
   };
@@ -330,7 +333,10 @@ function buildEscalationPrompt(
 
   // Use the check's escalation prompt if available; fall back to a generic task line
   const rawEscalation = check.escalationPrompt
-    ? check.escalationPrompt.replace(/\{\{details\}\}/g, details || `(see ${check.name})`)
+    ? check.escalationPrompt.replace(
+        /\{\{details\}\}/g,
+        details || `(see ${check.name})`,
+      )
     : `Investigate and resolve the issue described in the triage summary. Details: ${details || '(no details)'}`;
 
   return `[HEARTBEAT ESCALATION: ${check.name}]
@@ -500,12 +506,20 @@ async function escalateToAgent(
           resultText = streamedOutput.result;
           if (!closeTimer) {
             closeTimer = setTimeout(() => {
-              const inputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+              const inputDir = path.join(
+                DATA_DIR,
+                'ipc',
+                group.folder,
+                'input',
+              );
               try {
                 fs.mkdirSync(inputDir, { recursive: true });
                 fs.writeFileSync(path.join(inputDir, '_close'), '');
               } catch (err) {
-                logger.warn({ err, checkId: check.id }, 'Heartbeat: failed to write close sentinel');
+                logger.warn(
+                  { err, checkId: check.id },
+                  'Heartbeat: failed to write close sentinel',
+                );
               }
             }, CLOSE_DELAY_MS);
           }
@@ -565,12 +579,20 @@ async function escalateToBrowser(
           resultText = streamedOutput.result;
           if (!closeTimer) {
             closeTimer = setTimeout(() => {
-              const inputDir = path.join(DATA_DIR, 'ipc', group.folder, 'input');
+              const inputDir = path.join(
+                DATA_DIR,
+                'ipc',
+                group.folder,
+                'input',
+              );
               try {
                 fs.mkdirSync(inputDir, { recursive: true });
                 fs.writeFileSync(path.join(inputDir, '_close'), '');
               } catch (err) {
-                logger.warn({ err, checkId: check.id }, 'Heartbeat: failed to write close sentinel');
+                logger.warn(
+                  { err, checkId: check.id },
+                  'Heartbeat: failed to write close sentinel',
+                );
               }
             }, CLOSE_DELAY_MS);
           }
