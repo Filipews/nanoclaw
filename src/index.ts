@@ -409,7 +409,9 @@ async function runAgent(
             isMain,
             assistantName: ASSISTANT_NAME,
             ...(imageAttachments.length > 0 && { imageAttachments }),
-            ...(options?.modelOverride && { modelOverride: options.modelOverride }),
+            ...(options?.modelOverride && {
+              modelOverride: options.modelOverride,
+            }),
             ...(options?.source && { source: options.source }),
           },
           (proc, containerName) =>

@@ -16,7 +16,11 @@ import yaml from 'yaml';
 import { META_ALERT_COST_THRESHOLD } from './config.js';
 import { getTodayCost } from './cost-tracker.js';
 import { getDb, getRecentHeartbeatAlerts } from './db.js';
-import { CheckState, HeartbeatCheck, HeartbeatState } from './heartbeat-types.js';
+import {
+  CheckState,
+  HeartbeatCheck,
+  HeartbeatState,
+} from './heartbeat-types.js';
 import { logger } from './logger.js';
 
 export const TRIAGE_FOOTER = `
@@ -122,7 +126,7 @@ function loadCheckCadences(
         const fm = yaml.parse(fmMatch[1]) as Record<string, unknown>;
         if (typeof fm.cadence === 'number') {
           result[id] = {
-            name: (typeof fm.name === 'string' ? fm.name : id),
+            name: typeof fm.name === 'string' ? fm.name : id,
             cadence: fm.cadence,
           };
         }
@@ -136,17 +140,17 @@ function loadCheckCadences(
   return result;
 }
 
-function replaceSystemHealth(
-  text: string,
-  checksDir: string,
-): string {
+function replaceSystemHealth(text: string, checksDir: string): string {
   if (!text.includes('{{system_health}}')) return text;
 
   let db: Database.Database;
   try {
     db = getDb();
   } catch {
-    return text.replace(/\{\{system_health\}\}/g, '(system health data unavailable)');
+    return text.replace(
+      /\{\{system_health\}\}/g,
+      '(system health data unavailable)',
+    );
   }
 
   const state = readHeartbeatState(checksDir);
@@ -174,9 +178,10 @@ function replaceSystemHealth(
     const minutesSince = (nowMs - lastRunMs) / 60_000;
     const stalledThreshold = info.cadence * 2;
     const isStalled = minutesSince > stalledThreshold;
-    const ago = minutesSince < 60
-      ? `${Math.round(minutesSince)}m ago`
-      : `${(minutesSince / 60).toFixed(1)}h ago`;
+    const ago =
+      minutesSince < 60
+        ? `${Math.round(minutesSince)}m ago`
+        : `${(minutesSince / 60).toFixed(1)}h ago`;
     lines.push(
       `| ${info.name} | ${ago} | ${cs.lastResult} | ${cs.consecutiveOks} | ${isStalled ? `⚠️ stalled (${Math.round(minutesSince)}m, cadence ${info.cadence}m)` : 'no'} |`,
     );
@@ -188,7 +193,9 @@ function replaceSystemHealth(
   lines.push(`- Today's total: $${todayCost.toFixed(4)}`);
   lines.push(`- Threshold: $${META_ALERT_COST_THRESHOLD.toFixed(2)}/day`);
   if (todayCost >= META_ALERT_COST_THRESHOLD) {
-    lines.push(`- ⚠️ OVER THRESHOLD by $${(todayCost - META_ALERT_COST_THRESHOLD).toFixed(4)}`);
+    lines.push(
+      `- ⚠️ OVER THRESHOLD by $${(todayCost - META_ALERT_COST_THRESHOLD).toFixed(4)}`,
+    );
   }
 
   // Flagged issues summary
@@ -200,15 +207,21 @@ function replaceSystemHealth(
       continue;
     }
     if (cs.lastResult === 'error') {
-      issues.push(`${cadences[id].name}: last result was error — "${cs.lastSummary?.slice(0, 80) ?? 'unknown'}"`);
+      issues.push(
+        `${cadences[id].name}: last result was error — "${cs.lastSummary?.slice(0, 80) ?? 'unknown'}"`,
+      );
     }
     const minutesSince = (nowMs - new Date(cs.lastRun).getTime()) / 60_000;
     if (minutesSince > cadences[id].cadence * 2) {
-      issues.push(`${cadences[id].name}: stalled (${Math.round(minutesSince)}m since last run, cadence ${cadences[id].cadence}m)`);
+      issues.push(
+        `${cadences[id].name}: stalled (${Math.round(minutesSince)}m since last run, cadence ${cadences[id].cadence}m)`,
+      );
     }
   }
   if (todayCost >= META_ALERT_COST_THRESHOLD) {
-    issues.push(`Daily cost $${todayCost.toFixed(4)} exceeds threshold $${META_ALERT_COST_THRESHOLD.toFixed(2)}`);
+    issues.push(
+      `Daily cost $${todayCost.toFixed(4)} exceeds threshold $${META_ALERT_COST_THRESHOLD.toFixed(2)}`,
+    );
   }
 
   if (issues.length > 0) {
@@ -225,17 +238,17 @@ function replaceSystemHealth(
   return text.replace(/\{\{system_health\}\}/g, lines.join('\n'));
 }
 
-function replaceCrossSignalState(
-  text: string,
-  checksDir: string,
-): string {
+function replaceCrossSignalState(text: string, checksDir: string): string {
   if (!text.includes('{{cross_signal_state}}')) return text;
 
   let db: Database.Database;
   try {
     db = getDb();
   } catch {
-    return text.replace(/\{\{cross_signal_state\}\}/g, '(cross-signal data unavailable)');
+    return text.replace(
+      /\{\{cross_signal_state\}\}/g,
+      '(cross-signal data unavailable)',
+    );
   }
 
   const state = readHeartbeatState(checksDir);
@@ -269,7 +282,9 @@ function replaceCrossSignalState(
       : '—';
     const ago = (() => {
       const mins = (Date.now() - new Date(cs.lastRun).getTime()) / 60_000;
-      return mins < 60 ? `${Math.round(mins)}m ago` : `${(mins / 60).toFixed(1)}h ago`;
+      return mins < 60
+        ? `${Math.round(mins)}m ago`
+        : `${(mins / 60).toFixed(1)}h ago`;
     })();
     const line = `| ${cadences[id].name} | ${cs.lastResult} | ${ago} | ${summary} |`;
     totalChars += line.length;
