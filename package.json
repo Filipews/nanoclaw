@@ -19,6 +19,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
     "better-sqlite3": "^11.8.1",
     "cron-parser": "^5.5.0",
     "grammy": "^1.39.3",

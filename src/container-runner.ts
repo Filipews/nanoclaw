@@ -2,6 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
+import Anthropic from '@anthropic-ai/sdk';
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -69,28 +70,21 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-function buildVolumeMounts(
+async function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
-): VolumeMount[] {
+): Promise<VolumeMount[]> {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
-    // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
-    // Read-only prevents the agent from modifying host application code
-    // (src/, dist/, package.json, etc.) which would bypass the sandbox
-    // entirely on next restart.
     mounts.push({
       hostPath: projectRoot,
       containerPath: '/workspace/project',
       readonly: true,
     });
 
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Secrets are passed via stdin instead (see readSecrets()).
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
       mounts.push({
@@ -100,22 +94,18 @@ function buildVolumeMounts(
       });
     }
 
-    // Main also gets its group folder as the working directory
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
   } else {
-    // Other groups only get their own folder
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
 
-    // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
@@ -127,78 +117,43 @@ function buildVolumeMounts(
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
     group.folder,
     '.claude',
   );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  await fs.promises.mkdir(groupSessionsDir, { recursive: true });
+
+  // Settings merge (sequential — fast, and must complete before skills sync)
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  // Read existing settings or start with defaults; always merge mcpServers so
-  // new MCP servers are picked up by existing groups without wiping their config.
   let settings: Record<string, unknown> = {
     env: {
-      // Enable agent swarms (subagent orchestration)
-      // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-      // Load CLAUDE.md from additional mounted directories
-      // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
       CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-      // Enable Claude's memory feature (persists user preferences between sessions)
-      // https://code.claude.com/docs/en/memory#manage-auto-memory
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
     },
   };
-  if (fs.existsSync(settingsFile)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) as Record<
-        string,
-        unknown
-      >;
-    } catch {
-      // keep defaults if file is malformed
-    }
+  try {
+    const raw = await fs.promises.readFile(settingsFile, 'utf-8');
+    settings = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    // keep defaults if file missing or malformed
   }
-  // Remove legacy google MCP entry if present (now configured in agent-runner mcpServers).
   if (settings.mcpServers && typeof settings.mcpServers === 'object') {
     delete (settings.mcpServers as Record<string, unknown>).google;
   }
-  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  await fs.promises.writeFile(
+    settingsFile,
+    JSON.stringify(settings, null, 2) + '\n',
+  );
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
+  // Per-group IPC namespace
+  const groupIpcDir = resolveGroupIpcPath(group.folder);
+
+  // Parallelize: skills sync, agent-runner sync, and IPC dir creation are independent
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
-    }
-  }
-  mounts.push({
-    hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
-    readonly: false,
-  });
-
-  // Per-group IPC namespace: each group gets its own IPC directory
-  // This prevents cross-group privilege escalation via IPC
-  const groupIpcDir = resolveGroupIpcPath(group.folder);
-  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
-  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
-  mounts.push({
-    hostPath: groupIpcDir,
-    containerPath: '/workspace/ipc',
-    readonly: false,
-  });
-
-  // Copy agent-runner source into a per-group writable location so agents
-  // can customize it (add tools, change behavior) without affecting other
-  // groups. Recompiled on container startup via entrypoint.sh.
   const agentRunnerSrc = path.join(
     projectRoot,
     'container',
@@ -211,28 +166,86 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (fs.existsSync(agentRunnerSrc)) {
-    // Always sync canonical files (by mtime) so updates to container/agent-runner/src/
-    // propagate to all groups. Groups can still add new files; only canonical files
-    // are overwritten when the source is newer.
-    fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
-    for (const file of fs.readdirSync(agentRunnerSrc)) {
-      const srcFile = path.join(agentRunnerSrc, file);
-      const dstFile = path.join(groupAgentRunnerDir, file);
-      if (!fs.statSync(srcFile).isFile()) continue;
-      const srcMtime = fs.statSync(srcFile).mtimeMs;
-      const dstMtime = fs.existsSync(dstFile)
-        ? fs.statSync(dstFile).mtimeMs
-        : 0;
-      if (srcMtime > dstMtime) {
-        fs.copyFileSync(srcFile, dstFile);
-        logger.debug(
-          { group: group.folder, file },
-          'Synced agent-runner source file',
+
+  await Promise.all([
+    // Skills sync
+    (async () => {
+      try {
+        const entries = await fs.promises.readdir(skillsSrc, {
+          withFileTypes: true,
+        });
+        await Promise.all(
+          entries
+            .filter((e) => e.isDirectory())
+            .map((e) =>
+              fs.promises.cp(
+                path.join(skillsSrc, e.name),
+                path.join(skillsDst, e.name),
+                {
+                  recursive: true,
+                },
+              ),
+            ),
         );
+      } catch {
+        // skillsSrc doesn't exist — skip
       }
-    }
-  }
+    })(),
+    // Agent-runner source sync
+    (async () => {
+      try {
+        await fs.promises.mkdir(groupAgentRunnerDir, { recursive: true });
+        const files = await fs.promises.readdir(agentRunnerSrc, {
+          withFileTypes: true,
+        });
+        await Promise.all(
+          files
+            .filter((f) => f.isFile())
+            .map(async (f) => {
+              const srcFile = path.join(agentRunnerSrc, f.name);
+              const dstFile = path.join(groupAgentRunnerDir, f.name);
+              const srcStat = await fs.promises.stat(srcFile);
+              let dstMtime = 0;
+              try {
+                dstMtime = (await fs.promises.stat(dstFile)).mtimeMs;
+              } catch {
+                // doesn't exist yet
+              }
+              if (srcStat.mtimeMs > dstMtime) {
+                await fs.promises.copyFile(srcFile, dstFile);
+                logger.debug(
+                  { group: group.folder, file: f.name },
+                  'Synced agent-runner source file',
+                );
+              }
+            }),
+        );
+      } catch {
+        // agentRunnerSrc doesn't exist — skip
+      }
+    })(),
+    // IPC directories
+    Promise.all([
+      fs.promises.mkdir(path.join(groupIpcDir, 'messages'), {
+        recursive: true,
+      }),
+      fs.promises.mkdir(path.join(groupIpcDir, 'tasks'), { recursive: true }),
+      fs.promises.mkdir(path.join(groupIpcDir, 'input'), { recursive: true }),
+    ]),
+  ]);
+
+  mounts.push({
+    hostPath: groupSessionsDir,
+    containerPath: '/home/node/.claude',
+    readonly: false,
+  });
+
+  mounts.push({
+    hostPath: groupIpcDir,
+    containerPath: '/workspace/ipc',
+    readonly: false,
+  });
+
   mounts.push({
     hostPath: groupAgentRunnerDir,
     containerPath: '/app/src',
@@ -305,15 +318,14 @@ function buildContainerArgs(
  * Reads groups/personal/CLAUDE.md, vault MEMORY.md, and today/yesterday's ledger
  * from the host before the container spawns.
  */
-function buildContextPrefix(group: RegisteredGroup): string {
-  const parts: string[] = [];
+async function buildContextPrefix(group: RegisteredGroup): Promise<string> {
+  const filesToRead: Array<{ path: string; label: string }> = [];
 
   // Always inject groups/personal/CLAUDE.md if it exists
-  const personalClaudeMd = path.join(GROUPS_DIR, 'personal', 'CLAUDE.md');
-  if (fs.existsSync(personalClaudeMd)) {
-    const content = fs.readFileSync(personalClaudeMd, 'utf-8');
-    parts.push(`## groups/personal/CLAUDE.md\n\n${content.trim()}`);
-  }
+  filesToRead.push({
+    path: path.join(GROUPS_DIR, 'personal', 'CLAUDE.md'),
+    label: 'groups/personal/CLAUDE.md',
+  });
 
   // Find the /workspace/obsidian mount to resolve host paths for vault files
   const obsidianMount = group.containerConfig?.additionalMounts?.find(
@@ -322,12 +334,10 @@ function buildContextPrefix(group: RegisteredGroup): string {
 
   if (obsidianMount) {
     const base = obsidianMount.hostPath;
-
-    const memoryPath = path.join(base, 'MEMORY.md');
-    if (fs.existsSync(memoryPath)) {
-      const content = fs.readFileSync(memoryPath, 'utf-8');
-      parts.push(`## MEMORY.md\n\n${content.trim()}`);
-    }
+    filesToRead.push({
+      path: path.join(base, 'MEMORY.md'),
+      label: 'MEMORY.md',
+    });
 
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -336,14 +346,25 @@ function buildContextPrefix(group: RegisteredGroup): string {
       .slice(0, 10);
 
     for (const date of [today, yesterday]) {
-      const ledgerPath = path.join(base, 'Ledger', `${date}.md`);
-      if (fs.existsSync(ledgerPath)) {
-        const content = fs.readFileSync(ledgerPath, 'utf-8');
-        parts.push(`## Ledger/${date}.md\n\n${content.trim()}`);
-      }
+      filesToRead.push({
+        path: path.join(base, 'Ledger', `${date}.md`),
+        label: `Ledger/${date}.md`,
+      });
     }
   }
 
+  const results = await Promise.all(
+    filesToRead.map(async ({ path: filePath, label }) => {
+      try {
+        const content = await fs.promises.readFile(filePath, 'utf-8');
+        return `## ${label}\n\n${content.trim()}`;
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  const parts = results.filter((r): r is string => r !== null);
   if (parts.length === 0) return '';
   return `<injected_context>\n${parts.join('\n\n')}\n</injected_context>\n\n`;
 }
@@ -432,6 +453,166 @@ function writeObsidianLog(
 }
 
 /**
+ * Summarize a request/response pair into a compact ledger one-liner using Haiku.
+ * Falls back to first line of response (or prompt) if the API call fails.
+ */
+async function summarizeForLedger(
+  prompt: string,
+  results: string[],
+  status: 'success' | 'error',
+  source: string,
+): Promise<string> {
+  const cleanPrompt = prompt
+    .replace(/^<injected_context>[\s\S]*?<\/injected_context>\n\n/, '')
+    .trim();
+
+  const response = results.length > 0 ? results.join('\n\n').trim() : '';
+
+  // Truncate inputs to keep the summarization call small
+  const maxInput = 2000;
+  const truncPrompt =
+    cleanPrompt.length > maxInput
+      ? cleanPrompt.slice(0, maxInput) + '…'
+      : cleanPrompt;
+  const truncResponse =
+    response.length > maxInput ? response.slice(0, maxInput) + '…' : response;
+
+  const statusNote = status === 'error' ? ' (the task FAILED)' : '';
+  const sourceNote =
+    source === 'scheduled_task'
+      ? ' This was a scheduled task.'
+      : source === 'heartbeat_escalation'
+        ? ' This was a heartbeat escalation.'
+        : '';
+
+  try {
+    const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
+    const apiKey = secrets.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('No API key');
+
+    const anthropic = new Anthropic({ apiKey });
+    const msg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 150,
+      messages: [
+        {
+          role: 'user',
+          content: `Summarize this agent interaction into a single compact ledger line (max 120 chars). Focus on what was accomplished or what the key outcome/result was. No markdown, no bullet points, no quotes — just a plain one-liner.${statusNote}${sourceNote}
+
+REQUEST:
+${truncPrompt}
+
+RESPONSE:
+${truncResponse || '(no output)'}`,
+        },
+      ],
+    });
+
+    const text =
+      msg.content[0].type === 'text' ? msg.content[0].text.trim() : '';
+    if (text) {
+      // Track the summarization cost
+      logInvocation(getDb(), {
+        source: 'ledger_summary',
+        model: 'claude-haiku-4-5-20251001',
+        usage: {
+          inputTokens: msg.usage.input_tokens,
+          outputTokens: msg.usage.output_tokens,
+          cacheReadTokens:
+            (msg.usage as unknown as Record<string, number>)
+              .cache_read_input_tokens ?? 0,
+          cacheWriteTokens:
+            (msg.usage as unknown as Record<string, number>)
+              .cache_creation_input_tokens ?? 0,
+        },
+      });
+      return text.slice(0, 120);
+    }
+  } catch (err) {
+    logger.debug({ err }, 'Ledger summarization failed, using fallback');
+  }
+
+  // Fallback: first non-empty line of response, or prompt
+  if (response) {
+    const firstLine = response
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.length > 0);
+    if (firstLine) return firstLine.slice(0, 120);
+  }
+  return cleanPrompt.split('\n')[0].replace(/[#*`]/g, '').trim().slice(0, 120);
+}
+
+/**
+ * Append a compact one-liner to the group's Obsidian Ledger/ file.
+ * Skipped for heartbeat triage (noisy, cheap) and heartbeat summary.
+ * Uses Haiku to produce a meaningful summary of the interaction.
+ * Fire-and-forget: does not block the caller.
+ */
+function writeLedgerEntry(
+  group: RegisteredGroup,
+  prompt: string,
+  results: string[],
+  status: 'success' | 'error',
+  durationMs: number,
+  source: string,
+): void {
+  // Skip noisy/cheap sources — only log meaningful work
+  if (source === 'heartbeat_triage' || source === 'heartbeat_summary') return;
+
+  const obsidianMount = group.containerConfig?.additionalMounts?.find(
+    (m) => m.containerPath === '/workspace/obsidian',
+  );
+  if (!obsidianMount) return;
+
+  // Capture timestamp now (before async summarization)
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+  const timeStr =
+    String(now.getUTCHours()).padStart(2, '0') +
+    ':' +
+    String(now.getUTCMinutes()).padStart(2, '0') +
+    'Z';
+
+  // Fire-and-forget: summarize then append
+  summarizeForLedger(prompt, results, status, source)
+    .then((summary) => {
+      const ledgerDir = path.join(obsidianMount.hostPath, 'Ledger');
+      fs.mkdirSync(ledgerDir, { recursive: true });
+
+      let tag = '';
+      if (source === 'scheduled_task') tag = '[scheduled] ';
+      else if (source === 'heartbeat_escalation') tag = '[heartbeat] ';
+
+      const statusTag = status === 'error' ? ' (FAILED)' : '';
+      const line = `- ${timeStr} — ${tag}${summary}${statusTag}\n`;
+
+      const ledgerFile = path.join(ledgerDir, `${dateStr}.md`);
+      if (!fs.existsSync(ledgerFile)) {
+        fs.writeFileSync(
+          ledgerFile,
+          [
+            `---`,
+            `date: ${dateStr}`,
+            `type: ledger`,
+            `---`,
+            ``,
+            `# ${dateStr}`,
+            ``,
+            `<!-- Compact one-liners. Injected into agent context for continuity. -->`,
+            ``,
+          ].join('\n'),
+        );
+      }
+      fs.appendFileSync(ledgerFile, line);
+      logger.debug({ group: group.name, ledgerFile }, 'Ledger entry appended');
+    })
+    .catch((err) => {
+      logger.warn({ group: group.name, err }, 'Failed to write ledger entry');
+    });
+}
+
+/**
  * Read token usage from the SDK JSONL transcript for a given session.
  * Only counts assistant messages with timestamp >= sinceMs (the container start time).
  */
@@ -514,7 +695,11 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  // Build mounts and context prefix in parallel (both are independent I/O)
+  const [mounts, contextPrefix] = await Promise.all([
+    buildVolumeMounts(group, input.isMain),
+    buildContextPrefix(group),
+  ]);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
@@ -558,7 +743,6 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Prepend injected context (vault memory, ledger) to the prompt
-    const contextPrefix = buildContextPrefix(group);
     if (contextPrefix) {
       input.prompt = contextPrefix + input.prompt;
     }
@@ -744,6 +928,9 @@ export async function runContainerAgent(
     container.on('close', (code) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
+      const ledgerSource =
+        input.source ??
+        (input.isScheduledTask ? 'scheduled_task' : 'user_message');
 
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -779,6 +966,14 @@ export async function runContainerAgent(
               duration,
               input.isScheduledTask ?? false,
             );
+            writeLedgerEntry(
+              group,
+              input.prompt,
+              streamedResults,
+              'success',
+              duration,
+              ledgerSource,
+            );
             resolve({
               status: 'success',
               result: null,
@@ -793,6 +988,7 @@ export async function runContainerAgent(
           'Container timed out with no output',
         );
 
+        logCost(duration);
         writeObsidianLog(
           group,
           input.prompt,
@@ -800,6 +996,14 @@ export async function runContainerAgent(
           'error',
           duration,
           input.isScheduledTask ?? false,
+        );
+        writeLedgerEntry(
+          group,
+          input.prompt,
+          streamedResults,
+          'error',
+          duration,
+          ledgerSource,
         );
         resolve({
           status: 'error',
@@ -880,6 +1084,7 @@ export async function runContainerAgent(
           'Container exited with error',
         );
 
+        logCost(duration);
         writeObsidianLog(
           group,
           input.prompt,
@@ -887,6 +1092,14 @@ export async function runContainerAgent(
           'error',
           duration,
           input.isScheduledTask ?? false,
+        );
+        writeLedgerEntry(
+          group,
+          input.prompt,
+          streamedResults,
+          'error',
+          duration,
+          ledgerSource,
         );
         resolve({
           status: 'error',
@@ -911,6 +1124,14 @@ export async function runContainerAgent(
             'success',
             duration,
             input.isScheduledTask ?? false,
+          );
+          writeLedgerEntry(
+            group,
+            input.prompt,
+            streamedResults,
+            'success',
+            duration,
+            ledgerSource,
           );
           resolve({
             status: 'success',
@@ -958,6 +1179,14 @@ export async function runContainerAgent(
           output.status,
           duration,
           input.isScheduledTask ?? false,
+        );
+        writeLedgerEntry(
+          group,
+          input.prompt,
+          output.result ? [output.result] : [],
+          output.status,
+          duration,
+          ledgerSource,
         );
         resolve(output);
       } catch (err) {

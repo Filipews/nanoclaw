@@ -27,9 +27,18 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-// Mock fs
+// Mock fs — stub both sync and async methods
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
+  const mockPromises = {
+    mkdir: vi.fn(() => Promise.resolve()),
+    readFile: vi.fn(() => Promise.reject(new Error('ENOENT'))),
+    writeFile: vi.fn(() => Promise.resolve()),
+    stat: vi.fn(() => Promise.resolve({ mtimeMs: 0 })),
+    readdir: vi.fn(() => Promise.resolve([])),
+    cp: vi.fn(() => Promise.resolve()),
+    copyFile: vi.fn(() => Promise.resolve()),
+  };
   return {
     ...actual,
     default: {
@@ -41,6 +50,8 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      appendFileSync: vi.fn(),
+      promises: mockPromises,
     },
   };
 });
@@ -48,6 +59,24 @@ vi.mock('fs', async () => {
 // Mock mount-security
 vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
+}));
+
+// Mock Anthropic SDK (used by ledger summarization)
+vi.mock('@anthropic-ai/sdk', () => ({
+  default: class {
+    messages = {
+      create: () =>
+        Promise.resolve({
+          content: [{ type: 'text', text: 'Test summary' }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }),
+    };
+  },
+}));
+
+// Mock env.js to prevent API key reads in tests
+vi.mock('./env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
 }));
 
 // Create a controllable fake ChildProcess
