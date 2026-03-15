@@ -530,11 +530,10 @@ async function escalateToAgent(
 
     const summary = resultText || output.result || '';
     if (summary) {
-      await deps
-        .sendMessage(jid, `✅ [${check.name}]\n${summary}`)
-        .catch((err) =>
-          logger.warn({ err }, 'Failed to send escalation summary'),
-        );
+      logger.info(
+        { checkId: check.id, summary: summary.slice(0, 200) },
+        'Heartbeat: escalation completed (summary suppressed)',
+      );
     }
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
@@ -603,11 +602,10 @@ async function escalateToBrowser(
 
     const summary = resultText || output.result || '';
     if (summary) {
-      await deps
-        .sendMessage(jid, `✅ [${check.name}]\n${summary}`)
-        .catch((err) =>
-          logger.warn({ err }, 'Failed to send browser escalation summary'),
-        );
+      logger.info(
+        { checkId: check.id, summary: summary.slice(0, 200) },
+        'Heartbeat: browser escalation completed (summary suppressed)',
+      );
     }
   } catch (err) {
     if (closeTimer) clearTimeout(closeTimer);
@@ -758,8 +756,23 @@ async function tick(deps: HeartbeatDependencies): Promise<HeartbeatTickResult> {
   }
 
   if (isAlert && triage) {
-    logger.info({ checkId: check.id, summary }, 'Heartbeat ALERT');
-    escalated = await processTriageResult(check, triage, group, jid, deps);
+    // Suppress drive-inbox alerts when the inbox is actually empty
+    // (triage LLM sometimes returns ALERT instead of OK for empty inbox)
+    const driveEmptyPattern = /drive inbox is empty|nothing to file/i;
+    if (check.id === 'drive-inbox' && driveEmptyPattern.test(summary ?? '')) {
+      logger.info(
+        { checkId: check.id, summary },
+        'Heartbeat: suppressed drive-inbox empty alert',
+      );
+      // Correct the state to 'ok' since the inbox is actually empty
+      state.checks[check.id]!.lastResult = 'ok';
+      state.checks[check.id]!.consecutiveOks =
+        (state.checks[check.id]!.consecutiveOks ?? 0) + 1;
+      writeState(state);
+    } else {
+      logger.info({ checkId: check.id, summary }, 'Heartbeat ALERT');
+      escalated = await processTriageResult(check, triage, group, jid, deps);
+    }
   }
 
   void escalated; // used only for future DB update if needed
