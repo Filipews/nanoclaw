@@ -109,6 +109,16 @@ export function logInvocation(
 
 // --- Query helpers ---
 
+export function getTodayCost(db: Database.Database): number {
+  const today = new Date().toISOString().slice(0, 10);
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) as total FROM cost_log WHERE timestamp >= ? AND timestamp < ?`,
+    )
+    .get(`${today}T00:00:00`, `${today}T23:59:59`) as { total: number };
+  return row.total ?? 0;
+}
+
 export function getMonthSummary(db: Database.Database): {
   totalCost: number;
   dailyAvg: number;

@@ -785,6 +785,30 @@ export function getDailyHeartbeatStats(
   };
 }
 
+export function getRecentHeartbeatAlerts(
+  database: Database.Database,
+  hours: number,
+): Array<{
+  check_id: string;
+  result: string;
+  summary: string | null;
+  timestamp: string;
+}> {
+  return database
+    .prepare(
+      `SELECT check_id, result, summary, timestamp
+       FROM heartbeat_result_log
+       WHERE timestamp >= datetime('now', '-' || ? || ' hours') AND result = 'HEARTBEAT_ALERT'
+       ORDER BY timestamp DESC LIMIT 20`,
+    )
+    .all(hours) as Array<{
+    check_id: string;
+    result: string;
+    summary: string | null;
+    timestamp: string;
+  }>;
+}
+
 export function logHeartbeatResult(
   database: Database.Database,
   data: HeartbeatResultData,

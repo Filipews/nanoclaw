@@ -7,13 +7,17 @@
  * effect on the next tick without restarting.
  */
 
+import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
 import yaml from 'yaml';
 
+import { META_ALERT_COST_THRESHOLD } from './config.js';
+import { getTodayCost } from './cost-tracker.js';
+import { getDb, getRecentHeartbeatAlerts } from './db.js';
+import { CheckState, HeartbeatCheck, HeartbeatState } from './heartbeat-types.js';
 import { logger } from './logger.js';
-import { HeartbeatCheck } from './heartbeat-types.js';
 
 export const TRIAGE_FOOTER = `
 ---
@@ -91,6 +95,205 @@ function splitBody(body: string): {
   return { triageBody, escalationBody };
 }
 
+function readHeartbeatState(checksDir: string): HeartbeatState | null {
+  const statePath = path.join(path.dirname(checksDir), 'heartbeat-state.json');
+  try {
+    if (fs.existsSync(statePath)) {
+      return JSON.parse(fs.readFileSync(statePath, 'utf-8')) as HeartbeatState;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function loadCheckCadences(
+  checksDir: string,
+): Record<string, { name: string; cadence: number }> {
+  const result: Record<string, { name: string; cadence: number }> = {};
+  try {
+    const files = fs.readdirSync(checksDir).filter((f) => f.endsWith('.md'));
+    for (const file of files) {
+      const id = path.basename(file, '.md');
+      const raw = fs.readFileSync(path.join(checksDir, file), 'utf-8');
+      const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+      if (!fmMatch) continue;
+      try {
+        const fm = yaml.parse(fmMatch[1]) as Record<string, unknown>;
+        if (typeof fm.cadence === 'number') {
+          result[id] = {
+            name: (typeof fm.name === 'string' ? fm.name : id),
+            cadence: fm.cadence,
+          };
+        }
+      } catch {
+        // skip invalid
+      }
+    }
+  } catch {
+    // skip if dir unreadable
+  }
+  return result;
+}
+
+function replaceSystemHealth(
+  text: string,
+  checksDir: string,
+): string {
+  if (!text.includes('{{system_health}}')) return text;
+
+  let db: Database.Database;
+  try {
+    db = getDb();
+  } catch {
+    return text.replace(/\{\{system_health\}\}/g, '(system health data unavailable)');
+  }
+
+  const state = readHeartbeatState(checksDir);
+  const todayCost = getTodayCost(db);
+  const cadences = loadCheckCadences(checksDir);
+
+  const lines: string[] = ['## System Health Report', ''];
+
+  // Per-check status table
+  lines.push('### Check Status');
+  lines.push('| Check | Last Run | Result | Consecutive OKs | Stalled? |');
+  lines.push('|-------|----------|--------|-----------------|----------|');
+
+  const nowMs = Date.now();
+  const checkIds = Object.keys(cadences).filter((id) => id !== 'meta-alerts');
+
+  for (const id of checkIds) {
+    const cs: CheckState | undefined = state?.checks[id];
+    const info = cadences[id];
+    if (!cs) {
+      lines.push(`| ${info.name} | never | — | — | ⚠️ never run |`);
+      continue;
+    }
+    const lastRunMs = new Date(cs.lastRun).getTime();
+    const minutesSince = (nowMs - lastRunMs) / 60_000;
+    const stalledThreshold = info.cadence * 2;
+    const isStalled = minutesSince > stalledThreshold;
+    const ago = minutesSince < 60
+      ? `${Math.round(minutesSince)}m ago`
+      : `${(minutesSince / 60).toFixed(1)}h ago`;
+    lines.push(
+      `| ${info.name} | ${ago} | ${cs.lastResult} | ${cs.consecutiveOks} | ${isStalled ? `⚠️ stalled (${Math.round(minutesSince)}m, cadence ${info.cadence}m)` : 'no'} |`,
+    );
+  }
+
+  // Cost threshold
+  lines.push('');
+  lines.push('### Cost');
+  lines.push(`- Today's total: $${todayCost.toFixed(4)}`);
+  lines.push(`- Threshold: $${META_ALERT_COST_THRESHOLD.toFixed(2)}/day`);
+  if (todayCost >= META_ALERT_COST_THRESHOLD) {
+    lines.push(`- ⚠️ OVER THRESHOLD by $${(todayCost - META_ALERT_COST_THRESHOLD).toFixed(4)}`);
+  }
+
+  // Flagged issues summary
+  const issues: string[] = [];
+  for (const id of checkIds) {
+    const cs = state?.checks[id];
+    if (!cs) {
+      issues.push(`${cadences[id].name}: never run`);
+      continue;
+    }
+    if (cs.lastResult === 'error') {
+      issues.push(`${cadences[id].name}: last result was error — "${cs.lastSummary?.slice(0, 80) ?? 'unknown'}"`);
+    }
+    const minutesSince = (nowMs - new Date(cs.lastRun).getTime()) / 60_000;
+    if (minutesSince > cadences[id].cadence * 2) {
+      issues.push(`${cadences[id].name}: stalled (${Math.round(minutesSince)}m since last run, cadence ${cadences[id].cadence}m)`);
+    }
+  }
+  if (todayCost >= META_ALERT_COST_THRESHOLD) {
+    issues.push(`Daily cost $${todayCost.toFixed(4)} exceeds threshold $${META_ALERT_COST_THRESHOLD.toFixed(2)}`);
+  }
+
+  if (issues.length > 0) {
+    lines.push('');
+    lines.push('### Flagged Issues');
+    for (const issue of issues) {
+      lines.push(`- ${issue}`);
+    }
+  } else {
+    lines.push('');
+    lines.push('### No issues detected.');
+  }
+
+  return text.replace(/\{\{system_health\}\}/g, lines.join('\n'));
+}
+
+function replaceCrossSignalState(
+  text: string,
+  checksDir: string,
+): string {
+  if (!text.includes('{{cross_signal_state}}')) return text;
+
+  let db: Database.Database;
+  try {
+    db = getDb();
+  } catch {
+    return text.replace(/\{\{cross_signal_state\}\}/g, '(cross-signal data unavailable)');
+  }
+
+  const state = readHeartbeatState(checksDir);
+  const alerts = getRecentHeartbeatAlerts(db, 24);
+  const cadences = loadCheckCadences(checksDir);
+
+  const lines: string[] = [
+    '## Cross-Signal State',
+    `Current time: ${new Date().toISOString()}`,
+    '',
+  ];
+
+  // Recent state table (exclude cross-signal itself)
+  lines.push('### Recent Check Results');
+  lines.push('| Check | Last Result | Last Run | Summary |');
+  lines.push('|-------|-------------|----------|---------|');
+
+  const checkIds = Object.keys(cadences).filter((id) => id !== 'cross-signal');
+  let totalChars = 0;
+  const MAX_CHARS = 3000;
+
+  for (const id of checkIds) {
+    if (totalChars > MAX_CHARS) break;
+    const cs = state?.checks[id];
+    if (!cs) {
+      lines.push(`| ${cadences[id].name} | — | never | — |`);
+      continue;
+    }
+    const summary = cs.lastSummary
+      ? cs.lastSummary.slice(0, 120) + (cs.lastSummary.length > 120 ? '…' : '')
+      : '—';
+    const ago = (() => {
+      const mins = (Date.now() - new Date(cs.lastRun).getTime()) / 60_000;
+      return mins < 60 ? `${Math.round(mins)}m ago` : `${(mins / 60).toFixed(1)}h ago`;
+    })();
+    const line = `| ${cadences[id].name} | ${cs.lastResult} | ${ago} | ${summary} |`;
+    totalChars += line.length;
+    lines.push(line);
+  }
+
+  // Recent alerts
+  if (alerts.length > 0 && totalChars < MAX_CHARS) {
+    lines.push('');
+    lines.push('### Recent Alerts (last 24h)');
+    for (const alert of alerts) {
+      if (totalChars > MAX_CHARS) break;
+      const summary = alert.summary
+        ? alert.summary.slice(0, 100) + (alert.summary.length > 100 ? '…' : '')
+        : '—';
+      const line = `- **${alert.check_id}** (${alert.timestamp}): ${summary}`;
+      totalChars += line.length;
+      lines.push(line);
+    }
+  }
+
+  return text.replace(/\{\{cross_signal_state\}\}/g, lines.join('\n'));
+}
+
 /**
  * Parse a single `.md` file and return a HeartbeatCheck, or null if the
  * frontmatter is invalid/missing.
@@ -145,7 +348,11 @@ function parseCheckFile(
 
   const rawBody = fmMatch[2] ?? '';
   const today = new Date().toISOString().slice(0, 10);
-  const bodyWithDate = rawBody.replace(/\{\{today\}\}/g, today);
+  let bodyWithDate = rawBody.replace(/\{\{today\}\}/g, today);
+  // Inject system health and cross-signal data when template vars are present
+  const checksDir = path.dirname(filePath);
+  bodyWithDate = replaceSystemHealth(bodyWithDate, checksDir);
+  bodyWithDate = replaceCrossSignalState(bodyWithDate, checksDir);
   const { triageBody, escalationBody } = splitBody(bodyWithDate);
 
   // Build the full triage prompt: [HEARTBEAT CHECK: Name] prefix + body + footer

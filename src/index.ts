@@ -6,9 +6,11 @@ import {
   DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  SIMPLE_MESSAGE_MODEL,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { classifyComplexity } from './complexity-classifier.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -180,6 +182,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const prompt = formatMessages(missedMessages, TIMEZONE);
   const imageAttachments = parseImageReferences(missedMessages);
 
+  // Classify message complexity for model routing
+  const complexity = classifyComplexity(missedMessages);
+  const useSimpleModel = complexity === 'simple' && !isMainGroup;
+  const modelOverride = useSimpleModel ? SIMPLE_MESSAGE_MODEL : undefined;
+  const source = useSimpleModel ? 'user_message_simple' : undefined;
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -188,7 +196,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    {
+      group: group.name,
+      messageCount: missedMessages.length,
+      complexity,
+      ...(modelOverride && { modelOverride }),
+    },
     'Processing messages',
   );
 
@@ -245,6 +258,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         hadError = true;
       }
     },
+    { modelOverride, source },
   );
 
   await channel.setTyping?.(chatJid, false);
@@ -279,6 +293,7 @@ async function runAgent(
   chatJid: string,
   imageAttachments: Array<{ relativePath: string; mediaType: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  options?: { modelOverride?: string; source?: string },
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   let sessionId: string | undefined = sessions[group.folder];
@@ -357,6 +372,8 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
         ...(imageAttachments.length > 0 && { imageAttachments }),
+        ...(options?.modelOverride && { modelOverride: options.modelOverride }),
+        ...(options?.source && { source: options.source }),
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -392,6 +409,8 @@ async function runAgent(
             isMain,
             assistantName: ASSISTANT_NAME,
             ...(imageAttachments.length > 0 && { imageAttachments }),
+            ...(options?.modelOverride && { modelOverride: options.modelOverride }),
+            ...(options?.source && { source: options.source }),
           },
           (proc, containerName) =>
             queue.registerProcess(chatJid, proc, containerName, group.folder),

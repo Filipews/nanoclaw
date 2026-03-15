@@ -16,6 +16,8 @@ const envConfig = readEnvFile([
   'HEARTBEAT_TIMEZONE',
   'HEARTBEAT_TRIAGE_MODEL',
   'HEARTBEAT_ESCALATION_MODEL',
+  'META_ALERT_COST_THRESHOLD',
+  'SIMPLE_MESSAGE_MODEL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -109,6 +111,16 @@ export const HEARTBEAT_ESCALATION_MODEL =
   process.env.HEARTBEAT_ESCALATION_MODEL ||
   envConfig.HEARTBEAT_ESCALATION_MODEL ||
   'claude-sonnet-4-6';
+
+export const META_ALERT_COST_THRESHOLD = parseFloat(
+  process.env.META_ALERT_COST_THRESHOLD ||
+    envConfig.META_ALERT_COST_THRESHOLD ||
+    '5.0',
+);
+export const SIMPLE_MESSAGE_MODEL =
+  process.env.SIMPLE_MESSAGE_MODEL ||
+  envConfig.SIMPLE_MESSAGE_MODEL ||
+  'claude-haiku-4-5-20251001';
 
 // Ensure process.env.TZ matches the configured timezone so that
 // naive timestamp strings (no Z suffix) passed to new Date() on the
