@@ -46,6 +46,7 @@ export interface ContainerInput {
   maxTurns?: number; // max agentic turns passed to query()
   assistantName?: string;
   secrets?: Record<string, string>;
+  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
 }
 
 export interface ContainerUsage {

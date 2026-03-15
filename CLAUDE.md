@@ -30,6 +30,8 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/sender-allowlist.ts` | Per-chat sender authorization (trigger/drop modes) |
 | `src/timezone.ts` | UTC → local time formatting via Intl API |
 | `src/env.ts` | Reads .env keys without polluting process.env |
+| `src/image.ts` | Image processing: resize, save to attachments, parse references |
+| `src/transcription.ts` | Audio transcription via OpenAI Whisper API |
 | `src/types.ts` | Central types: Channel, RegisteredGroup, NewMessage, ScheduledTask, AdditionalMount |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |

@@ -378,6 +378,49 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'send_file',
+  "Send a file (image or document) back to the user. The file must exist in /workspace/group/. Use type 'photo' for images, 'document' for other files.",
+  {
+    file_path: z.string().describe('Path relative to /workspace/group/ (e.g., "attachments/result.png")'),
+    caption: z.string().optional().describe('Optional caption to accompany the file'),
+    type: z.enum(['photo', 'document']).default('document').describe("'photo' for images, 'document' for other files"),
+  },
+  async (args) => {
+    const fullPath = path.join('/workspace/group', args.file_path);
+
+    // Validate the path doesn't escape /workspace/group/
+    const resolved = path.resolve(fullPath);
+    if (!resolved.startsWith(path.resolve('/workspace/group'))) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: file path must be within /workspace/group/' }],
+        isError: true,
+      };
+    }
+
+    if (!fs.existsSync(resolved)) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: file not found: ${args.file_path}` }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'send_file',
+      chatJid,
+      filePath: args.file_path,
+      caption: args.caption || undefined,
+      sendAs: args.type,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: `File "${args.file_path}" send requested.` }] };
+  },
+);
+
 // === Playwright Browser Tools ===
 
 let _browser: Browser | null = null;
