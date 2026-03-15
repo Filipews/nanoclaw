@@ -10,6 +10,37 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { ButtonAction, RegisteredGroup } from './types.js';
 
+export function purgeIpcMessages(groupFolder: string): void {
+  const messagesDir = path.join(DATA_DIR, 'ipc', groupFolder, 'messages');
+  try {
+    if (!fs.existsSync(messagesDir)) return;
+    const files = fs
+      .readdirSync(messagesDir)
+      .filter((f) => f.endsWith('.json'));
+    for (const file of files) {
+      try {
+        fs.unlinkSync(path.join(messagesDir, file));
+      } catch (err) {
+        logger.warn(
+          { err, file, groupFolder },
+          'Failed to purge IPC message file',
+        );
+      }
+    }
+    if (files.length > 0) {
+      logger.debug(
+        { groupFolder, count: files.length },
+        'Purged pending IPC messages after streaming delivery',
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { err, groupFolder },
+      'Failed to read IPC messages dir for purge',
+    );
+  }
+}
+
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   sendMessageWithButtons?: (

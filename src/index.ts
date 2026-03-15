@@ -25,6 +25,7 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  clearSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -42,7 +43,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
-import { startIpcWatcher } from './ipc.js';
+import { purgeIpcMessages, startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   isSenderAllowed,
@@ -219,6 +220,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
         await channel.sendMessage(chatJid, text);
+        purgeIpcMessages(group.folder);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -354,6 +356,49 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
+      // Detect broken session (OOM kill or timeout on resume) and retry fresh
+      const isOomOrTimeout =
+        sessionId &&
+        (output.error?.includes('code 137') ||
+          output.error?.includes('timed out'));
+      if (isOomOrTimeout) {
+        logger.warn(
+          { group: group.name, sessionId, error: output.error },
+          'Session appears broken (OOM/timeout on resume), clearing and retrying fresh',
+        );
+        delete sessions[group.folder];
+        clearSession(group.folder);
+
+        const retryOutput = await runContainerAgent(
+          group,
+          {
+            prompt,
+            sessionId: undefined,
+            groupFolder: group.folder,
+            chatJid,
+            isMain,
+            assistantName: ASSISTANT_NAME,
+          },
+          (proc, containerName) =>
+            queue.registerProcess(chatJid, proc, containerName, group.folder),
+          wrappedOnOutput,
+        );
+
+        if (retryOutput.newSessionId) {
+          sessions[group.folder] = retryOutput.newSessionId;
+          setSession(group.folder, retryOutput.newSessionId);
+        }
+
+        if (retryOutput.status === 'error') {
+          logger.error(
+            { group: group.name, error: retryOutput.error },
+            'Fresh session retry also failed',
+          );
+          return 'error';
+        }
+        return 'success';
+      }
+
       logger.error(
         { group: group.name, error: output.error },
         'Container agent error',
