@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     libdrm2 \
     libxshmfence1 \
+    x11-utils \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
@@ -36,6 +37,12 @@ ENV DISPLAY=:99
 
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code
+
+# Move real agent-browser aside, install wrapper that ensures Xvfb is running
+RUN REAL=$(which agent-browser) && \
+    mv "$REAL" "${REAL}-real" && \
+    printf '#!/bin/bash\nif ! pgrep -x Xvfb >/dev/null 2>&1; then\n  Xvfb :99 -screen 0 1920x1080x24 &\n  timeout 2 bash -c '"'"'until xdpyinfo -display :99 >/dev/null 2>&1; do sleep 0.05; done'"'"'\nfi\nexec agent-browser-real "$@"\n' > "$REAL" && \
+    chmod +x "$REAL"
 
 # Create app directory
 WORKDIR /app
@@ -58,7 +65,7 @@ RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/
 # Create entrypoint script
 # Secrets are passed via stdin JSON — temp file is deleted immediately after Node reads it
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\nXvfb :99 -screen 0 1920x1080x24 &\nsleep 1\ncat > /tmp/input.json\nnode /app/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+RUN printf '#!/bin/bash\nset -e\ncat > /tmp/input.json\nnode /app/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node
