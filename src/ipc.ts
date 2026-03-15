@@ -48,7 +48,12 @@ export interface IpcDeps {
     text: string,
     buttons: ButtonAction[],
   ) => Promise<void>;
-  sendFile?: (jid: string, filePath: string, caption?: string, sendAs?: 'photo' | 'document') => Promise<void>;
+  sendFile?: (
+    jid: string,
+    filePath: string,
+    caption?: string,
+    sendAs?: 'photo' | 'document',
+  ) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -180,14 +185,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   try {
                     groupDir = resolveGroupFolderPath(sourceGroup);
                   } catch {
-                    logger.warn({ sourceGroup }, 'IPC send_file: invalid group folder');
+                    logger.warn(
+                      { sourceGroup },
+                      'IPC send_file: invalid group folder',
+                    );
                     fs.unlinkSync(filePath);
                     continue;
                   }
-                  const resolvedPath = path.resolve(
-                    groupDir,
-                    data.filePath,
-                  );
+                  const resolvedPath = path.resolve(groupDir, data.filePath);
                   if (!resolvedPath.startsWith(path.resolve(groupDir))) {
                     logger.warn(
                       { filePath: data.filePath, sourceGroup },
@@ -201,7 +206,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       data.sendAs,
                     );
                     logger.info(
-                      { chatJid: data.chatJid, sourceGroup, filePath: data.filePath },
+                      {
+                        chatJid: data.chatJid,
+                        sourceGroup,
+                        filePath: data.filePath,
+                      },
                       'IPC send_file sent',
                     );
                   } else {

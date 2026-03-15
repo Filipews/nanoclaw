@@ -60,7 +60,9 @@ const botRef = vi.hoisted(() => ({ current: null as any }));
 vi.mock('grammy', () => ({
   InputFile: class MockInputFile {
     source: string;
-    constructor(source: string) { this.source = source; }
+    constructor(source: string) {
+      this.source = source;
+    }
   },
   Bot: class MockBot {
     token: string;
@@ -105,7 +107,7 @@ vi.mock('grammy', () => ({
 
 // Mock fs for document saving
 vi.mock('fs', async (importOriginal) => {
-  const actual = await importOriginal() as typeof import('fs');
+  const actual = (await importOriginal()) as typeof import('fs');
   return {
     ...actual,
     default: {
@@ -673,13 +675,21 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createMediaCtx({
-        extra: { document: { file_id: 'doc1', file_name: 'report.pdf', file_size: 1024 } },
+        extra: {
+          document: {
+            file_id: 'doc1',
+            file_name: 'report.pdf',
+            file_size: 1024,
+          },
+        },
       });
       await triggerMediaMessage('message:document', ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: expect.stringContaining('[Document: attachments/doc-') }),
+        expect.objectContaining({
+          content: expect.stringContaining('[Document: attachments/doc-'),
+        }),
       );
     });
 
@@ -693,7 +703,9 @@ describe('TelegramChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: expect.stringContaining('[Document: attachments/doc-') }),
+        expect.objectContaining({
+          content: expect.stringContaining('[Document: attachments/doc-'),
+        }),
       );
     });
 
@@ -1172,7 +1184,9 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      currentBot().api.getFile.mockRejectedValueOnce(new Error('Download failed'));
+      currentBot().api.getFile.mockRejectedValueOnce(
+        new Error('Download failed'),
+      );
 
       const ctx = createMediaCtx({
         extra: {
@@ -1200,7 +1214,11 @@ describe('TelegramChannel', () => {
 
       const ctx = createMediaCtx({
         extra: {
-          document: { file_id: 'doc123', file_name: 'report.pdf', file_size: 1024 },
+          document: {
+            file_id: 'doc123',
+            file_name: 'report.pdf',
+            file_size: 1024,
+          },
         },
       });
       await triggerMediaMessage('message:document', ctx);
@@ -1245,7 +1263,12 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      await channel.sendFile('tg:100200300', '/tmp/test.jpg', 'A photo', 'photo');
+      await channel.sendFile(
+        'tg:100200300',
+        '/tmp/test.jpg',
+        'A photo',
+        'photo',
+      );
 
       expect(currentBot().api.sendPhoto).toHaveBeenCalledWith(
         '100200300',
@@ -1259,7 +1282,12 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      await channel.sendFile('tg:100200300', '/tmp/report.pdf', undefined, 'document');
+      await channel.sendFile(
+        'tg:100200300',
+        '/tmp/report.pdf',
+        undefined,
+        'document',
+      );
 
       expect(currentBot().api.sendDocument).toHaveBeenCalledWith(
         '100200300',

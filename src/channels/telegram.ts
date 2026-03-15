@@ -379,7 +379,10 @@ export class TelegramChannel implements Channel {
         const replyPrefix = this.getReplyPrefix(ctx);
         this.deliverMessage(ctx, `${replyPrefix}${result.content}`);
       } catch (err) {
-        logger.warn({ chatJid, err }, 'Photo download/processing failed, using placeholder');
+        logger.warn(
+          { chatJid, err },
+          'Photo download/processing failed, using placeholder',
+        );
         storeNonText(ctx, '[Photo]');
       }
     });
@@ -400,7 +403,10 @@ export class TelegramChannel implements Channel {
         const replyPrefix = this.getReplyPrefix(ctx);
         this.deliverMessage(ctx, `${replyPrefix}[Voice: ${transcript}]`);
       } catch (err) {
-        logger.warn({ chatJid, err }, 'Voice transcription failed, using placeholder');
+        logger.warn(
+          { chatJid, err },
+          'Voice transcription failed, using placeholder',
+        );
         storeNonText(ctx, '[Voice message]');
       }
     });
@@ -421,7 +427,10 @@ export class TelegramChannel implements Channel {
         const replyPrefix = this.getReplyPrefix(ctx);
         this.deliverMessage(ctx, `${replyPrefix}[Audio: ${transcript}]`);
       } catch (err) {
-        logger.warn({ chatJid, err }, 'Audio transcription failed, using placeholder');
+        logger.warn(
+          { chatJid, err },
+          'Audio transcription failed, using placeholder',
+        );
         storeNonText(ctx, '[Audio]');
       }
     });
@@ -462,7 +471,10 @@ export class TelegramChannel implements Channel {
         const replyPrefix = this.getReplyPrefix(ctx);
         this.deliverMessage(ctx, `${replyPrefix}${content}`);
       } catch (err) {
-        logger.warn({ chatJid, err }, 'Document download failed, using placeholder');
+        logger.warn(
+          { chatJid, err },
+          'Document download failed, using placeholder',
+        );
         storeNonText(ctx, `[Document: ${originalName}]`);
       }
     });
@@ -563,7 +575,8 @@ export class TelegramChannel implements Channel {
     const reply = ctx.message?.reply_to_message;
     if (!reply) return '';
     const replyText = reply.text || reply.caption || '';
-    const replySender = reply.from?.first_name || reply.from?.username || 'Unknown';
+    const replySender =
+      reply.from?.first_name || reply.from?.username || 'Unknown';
     if (!replyText) return '';
     return `[Replying to ${replySender}: "${replyText.slice(0, 300)}"]\n`;
   }
@@ -573,10 +586,20 @@ export class TelegramChannel implements Channel {
     const group = this.opts.registeredGroups()[chatJid];
     if (!group) return;
     const timestamp = new Date(ctx.message.date * 1000).toISOString();
-    const senderName = ctx.from?.first_name || ctx.from?.username || ctx.from?.id?.toString() || 'Unknown';
+    const senderName =
+      ctx.from?.first_name ||
+      ctx.from?.username ||
+      ctx.from?.id?.toString() ||
+      'Unknown';
     const sender = ctx.from?.id?.toString() || '';
     const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-    this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+    this.opts.onChatMetadata(
+      chatJid,
+      timestamp,
+      undefined,
+      'telegram',
+      isGroup,
+    );
     this.opts.onMessage(chatJid, {
       id: ctx.message.message_id.toString(),
       chat_jid: chatJid,
@@ -602,7 +625,12 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async sendFile(jid: string, filePath: string, caption?: string, sendAs?: 'photo' | 'document'): Promise<void> {
+  async sendFile(
+    jid: string,
+    filePath: string,
+    caption?: string,
+    sendAs?: 'photo' | 'document',
+  ): Promise<void> {
     if (!this.bot) return;
     try {
       const numericId = jid.replace(/^tg:/, '');

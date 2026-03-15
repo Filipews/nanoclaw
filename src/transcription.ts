@@ -1,9 +1,7 @@
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
-export async function transcribeAudio(
-  buffer: Buffer,
-): Promise<string | null> {
+export async function transcribeAudio(buffer: Buffer): Promise<string | null> {
   const env = readEnvFile(['OPENAI_API_KEY']);
   const apiKey = env.OPENAI_API_KEY;
 
