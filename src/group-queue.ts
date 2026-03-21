@@ -82,6 +82,11 @@ export class GroupQueue {
       return;
     }
 
+    // Claim the active slot synchronously BEFORE the async runForGroup call.
+    // This prevents a race where two enqueueMessageCheck calls pass the
+    // state.active check before either runForGroup sets it to true.
+    this.activateGroup(state);
+
     this.runForGroup(groupJid, 'messages').catch((err) =>
       logger.error({ groupJid, err }, 'Unhandled error in runForGroup'),
     );
@@ -123,7 +128,8 @@ export class GroupQueue {
       return;
     }
 
-    // Run immediately
+    // Claim the active slot synchronously before async runTask
+    this.activateTaskGroup(state, taskId);
     this.runTask(groupJid, { id: taskId, groupJid, fn }).catch((err) =>
       logger.error({ groupJid, taskId, err }, 'Unhandled error in runTask'),
     );
@@ -193,16 +199,31 @@ export class GroupQueue {
     }
   }
 
-  private async runForGroup(
-    groupJid: string,
-    reason: 'messages' | 'drain',
-  ): Promise<void> {
-    const state = this.getGroup(groupJid);
+  /**
+   * Synchronously claim the active slot for a group.
+   * Must be called before the async runForGroup/runTask to prevent races.
+   */
+  private activateGroup(state: GroupState): void {
     state.active = true;
     state.idleWaiting = false;
     state.isTaskContainer = false;
     state.pendingMessages = false;
     this.activeCount++;
+  }
+
+  private activateTaskGroup(state: GroupState, taskId: string): void {
+    state.active = true;
+    state.idleWaiting = false;
+    state.isTaskContainer = true;
+    state.runningTaskId = taskId;
+    this.activeCount++;
+  }
+
+  private async runForGroup(
+    groupJid: string,
+    reason: 'messages' | 'drain',
+  ): Promise<void> {
+    const state = this.getGroup(groupJid);
 
     logger.debug(
       { groupJid, reason, activeCount: this.activeCount },
@@ -233,11 +254,6 @@ export class GroupQueue {
 
   private async runTask(groupJid: string, task: QueuedTask): Promise<void> {
     const state = this.getGroup(groupJid);
-    state.active = true;
-    state.idleWaiting = false;
-    state.isTaskContainer = true;
-    state.runningTaskId = task.id;
-    this.activeCount++;
 
     logger.debug(
       { groupJid, taskId: task.id, activeCount: this.activeCount },
@@ -291,6 +307,7 @@ export class GroupQueue {
     // Tasks first (they won't be re-discovered from SQLite like messages)
     if (state.pendingTasks.length > 0) {
       const task = state.pendingTasks.shift()!;
+      this.activateTaskGroup(state, task.id);
       this.runTask(groupJid, task).catch((err) =>
         logger.error(
           { groupJid, taskId: task.id, err },
@@ -302,6 +319,7 @@ export class GroupQueue {
 
     // Then pending messages
     if (state.pendingMessages) {
+      this.activateGroup(state);
       this.runForGroup(groupJid, 'drain').catch((err) =>
         logger.error(
           { groupJid, err },
@@ -326,6 +344,7 @@ export class GroupQueue {
       // Prioritize tasks over messages
       if (state.pendingTasks.length > 0) {
         const task = state.pendingTasks.shift()!;
+        this.activateTaskGroup(state, task.id);
         this.runTask(nextJid, task).catch((err) =>
           logger.error(
             { groupJid: nextJid, taskId: task.id, err },
@@ -333,6 +352,7 @@ export class GroupQueue {
           ),
         );
       } else if (state.pendingMessages) {
+        this.activateGroup(state);
         this.runForGroup(nextJid, 'drain').catch((err) =>
           logger.error(
             { groupJid: nextJid, err },
